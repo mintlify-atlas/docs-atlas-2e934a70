@@ -8,7 +8,7 @@ Consuming messages is where the real work happens. Broccoli provides multiple co
 
 ## High-Level: process_messages (Recommended)
 
-For most use cases, `process_messages` is the simplest and most robust choice. It automatically handles message acknowledgment and rejection based on your handler's result.
+For most use cases, `process_messages` is the simplest and most robust choice. It automatically handles message acknowledgment and rejection based on your handler's result. By default, messages are automatically acknowledged after the handler succeeds (`handler_ack: true`), then removed from the processing queue.
 
 ```rust
 pub async fn process_messages<T, F, Fut>(
@@ -38,6 +38,7 @@ where
 <CodeGroup>
 ```rust Single-Threaded Consumer
 use broccoli_queue::queue::BroccoliQueue;
+use broccoli_queue::brokers::broker::BrokerMessage;
 use broccoli_queue::error::BroccoliError;
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +57,7 @@ async fn main() -> Result<(), BroccoliError> {
 
     // Single-threaded: processes one message at a time
     queue
-        .process_messages("jobs", None, None, |msg: broccoli_queue::brokers::broker::BrokerMessage<JobPayload>| async move {
+        .process_messages("jobs", None, None, |msg: BrokerMessage<JobPayload>| async move {
             println!("Processing job: {}", msg.payload.id);
             Ok(())
         })
@@ -295,7 +296,7 @@ Fine-tune consumption behavior:
 ### auto_ack
 **Type:** `Option<bool>` | Default: `false`
 
-If `true`, messages are automatically acknowledged immediately after consumption. Useful for fire-and-forget scenarios. When enabled, you cannot manually acknowledge—attempting to do so will error.
+If `true`, messages are automatically acknowledged immediately after consumption, bypassing the processing queue. Useful for fire-and-forget scenarios. When enabled, you cannot manually acknowledge or reject—attempting to do so will error.
 
 ### fairness
 **Type:** `Option<bool>` | Default: `None`
@@ -310,7 +311,7 @@ Sleep duration between iterations of tight consumer loops. This allows the Tokio
 ### handler_ack
 **Type:** `Option<bool>` | Default: `true`
 
-(For `process_messages` only) Whether to automatically acknowledge after the handler succeeds. Set to `false` if your handler spawns long-running tasks or if you need external processes to manage acknowledgment.
+(For `process_messages` and `process_messages_with_handlers` only) Whether to automatically acknowledge messages after the handler function succeeds. When `true` (default), successful messages are acknowledged and removed from the queue. Set to `false` if your handler spawns long-running tasks that complete later, or if you need external processes to manage acknowledgment. Note: handlers that return an error always reject, regardless of this setting.
 
 ```rust
 use broccoli_queue::queue::{ConsumeOptions, ConsumeOptionsBuilder};

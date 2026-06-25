@@ -1,7 +1,7 @@
 ---
 title: "Redis Broker for Broccoli Queue"
 sidebarTitle: "Redis"
-description: "Configure Broccoli to use Redis as its message broker. Covers connection URL format, connection pooling, TLS, and Redis-specific features like fairness queues."
+description: "Use Redis as Broccoli's message broker with connection pooling, TLS support, and fairness queues for distributed message processing."
 ---
 
 Redis is the default backend for Broccoli and is well-suited for production workloads. It provides high performance message queuing with support for advanced features like fairness queues, scheduled message delivery, and atomic processing queues.
@@ -11,10 +11,10 @@ Redis is the default backend for Broccoli and is well-suited for production work
 Add Broccoli with the Redis feature to your `Cargo.toml`:
 
 ```toml
-broccoli_queue = { version = "0.4", features = ["redis"] }
+broccoli_queue = { version = "0.4.6", features = ["redis"] }
 ```
 
-Redis is included by default, but explicitly specifying the feature is recommended for clarity.
+Redis is the default feature and is included automatically. Explicitly specifying it is optional.
 
 ## Connection URL Format
 
@@ -49,7 +49,7 @@ rediss://[username:password@]host[:port][/db]
 
 ## Connection Pooling
 
-Redis connections are pooled using the `bb8-redis` connection pool. The number of pooled connections is controlled via the `.pool_connections()` builder method. The default is 10 connections.
+Redis connections are pooled using the `bb8-redis` connection pool. The number of pooled connections is controlled via the `.pool_connections()` builder method (default: 10 connections). The connection timeout is hardcoded to 2 seconds.
 
 ```rust
 let queue = BroccoliQueue::builder("redis://localhost:6379")
@@ -112,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "order_processing",
+            None,
             serde_json::json!({"order_id": 123, "amount": 99.99}),
             None,
         )
@@ -121,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "notifications",
+            None,
             serde_json::json!({"user_id": 456, "message": "Hello!"}),
             Some(PublishOptions {
                 delay: Some(Duration::from_secs(60)),

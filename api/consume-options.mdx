@@ -10,10 +10,10 @@ description: "Control consumer behavior with ConsumeOptions: configure auto-ackn
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `auto_ack` | `Option<bool>` | `false` | Whether to automatically acknowledge messages immediately upon consumption |
+| `auto_ack` | `Option<bool>` | `Some(false)` | Whether to automatically acknowledge messages immediately upon consumption |
 | `fairness` | `Option<bool>` | `None` | Whether to consume from fairness queues (round-robin across disambiguators); Redis only |
-| `consume_wait` | `Option<Duration>` | Zero | Sleep duration in tight consumer loops to allow interruption |
-| `handler_ack` | `Option<bool>` | `true` | Whether to auto-acknowledge after successful handler execution in `process_messages` |
+| `consume_wait` | `Option<Duration>` | `None` | Sleep duration in tight consumer loops to allow interruption |
+| `handler_ack` | `Option<bool>` | `Some(true)` | Whether to auto-acknowledge after successful handler execution in `process_messages` |
 
 ## Constructor
 
@@ -135,7 +135,7 @@ let options = ConsumeOptions::builder()
 
 **Note:** Setting this to zero (the default) minimizes performance impact but prevents tokio from interrupting the loop. Increase this value if you need better cancellation responsiveness.
 
-### `handler_ack(handler_ack: bool) -> Self`
+### `handler_ack(followup: bool) -> Self`
 
 Sets whether to automatically acknowledge messages after successful handler execution in `process_messages`.
 
@@ -147,7 +147,7 @@ pub const fn handler_ack(mut self, followup: bool) -> Self
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `handler_ack` | `bool` | If `true`, acknowledge after successful handler; if `false`, leave acknowledgment to another actor |
+| `followup` | `bool` | If `true`, acknowledge after successful handler; if `false`, leave acknowledgment to another actor |
 
 **Returns:** The updated `ConsumeOptionsBuilder` for chaining.
 

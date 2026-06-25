@@ -1,7 +1,7 @@
 ---
 title: "SurrealDB Broker for Broccoli Queue"
 sidebarTitle: "SurrealDB"
-description: "Use SurrealDB as an embedded or remote message broker for Broccoli. Ideal for testing and development with in-memory queues or persistent SurrealDB instances."
+description: "Use SurrealDB for embedded or remote message queuing with Broccoli. Perfect for testing and development with in-memory or persistent storage."
 ---
 
 SurrealDB is a versatile message broker backend for Broccoli, offering both embedded (in-memory) and remote (WebSocket) operation modes. It is particularly useful for development, testing, and embedded applications where you want to avoid external broker dependencies.
@@ -11,7 +11,7 @@ SurrealDB is a versatile message broker backend for Broccoli, offering both embe
 Enable the SurrealDB feature in your `Cargo.toml`:
 
 ```toml
-broccoli_queue = { version = "0.4", default-features = false, features = ["surrealdb"] }
+broccoli_queue = { version = "0.4.6", default-features = false, features = ["surrealdb"] }
 ```
 
 ## Connection Modes
@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "test_queue",
+            None,
             serde_json::json!({"test": "data"}),
             None,
         )
@@ -61,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "events",
+            None,
             serde_json::json!({"event": "user_signup"}),
             None,
         )
@@ -94,6 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "tasks",
+            None,
             serde_json::json!({"task_id": 1, "action": "process"}),
             None,
         )
@@ -126,7 +129,7 @@ mod tests {
             .expect("Failed to create queue");
 
         queue
-            .publish("test", serde_json::json!({"id": 1}), None)
+            .publish("test", None, serde_json::json!({"id": 1}), None)
             .await
             .expect("Failed to publish");
     }
@@ -151,6 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "component_events",
+            None,
             serde_json::json!({"component": "auth", "event": "user_login"}),
             None,
         )
@@ -204,6 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "scheduled_tasks",
+            None,
             serde_json::json!({"task": "daily_report"}),
             Some(PublishOptions {
                 delay: Some(Duration::from_secs(30)),
@@ -238,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         queue
             .publish(
                 "my_queue",
+                None,
                 json!({"message_id": i, "content": format!("Message {}", i)}),
                 None,
             )

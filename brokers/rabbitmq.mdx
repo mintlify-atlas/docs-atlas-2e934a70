@@ -1,7 +1,7 @@
 ---
 title: "RabbitMQ Broker for Broccoli Queue"
 sidebarTitle: "RabbitMQ"
-description: "Use RabbitMQ as Broccoli's message broker via AMQP. Set up the connection, configure the delayed-exchange plugin for scheduling, and understand queue topology."
+description: "Use RabbitMQ as Broccoli's AMQP broker. Configure connections, enable delayed-exchange for scheduling, and set up enterprise message routing."
 ---
 
 RabbitMQ is an enterprise-grade message broker that provides reliability, flexibility, and advanced routing capabilities for Broccoli. It is well-suited for complex message processing workflows and large-scale deployments.
@@ -11,7 +11,7 @@ RabbitMQ is an enterprise-grade message broker that provides reliability, flexib
 Enable the RabbitMQ feature in your `Cargo.toml`:
 
 ```toml
-broccoli_queue = { version = "0.4", default-features = false, features = ["rabbitmq"] }
+broccoli_queue = { version = "0.4.6", default-features = false, features = ["rabbitmq"] }
 ```
 
 ## Connection URL Format
@@ -42,7 +42,7 @@ docker run -d --name rabbitmq \
 
 This starts RabbitMQ with:
 - AMQP port `5672` exposed
-- Management UI on `http://localhost:15672` (default credentials: `guest:guest`)
+- Management UI on `http://localhost:15672` (port 15672, default credentials: `guest:guest`)
 
 ## Scheduling Support
 
@@ -58,7 +58,7 @@ Broccoli's delayed and scheduled message features require the **RabbitMQ Delayed
   </Step>
   
   <Step title="Or use the provided Dockerfile">
-    The repository includes `Dockerfile.rabbitmq` which pre-installs the delayed-exchange plugin:
+    The repository includes `Dockerfile.rabbitmq` which pre-installs the rabbitmq_delayed_message_exchange plugin (v4.0.7):
     
     ```bash
     docker build -f Dockerfile.rabbitmq -t broccoli-rabbitmq .
@@ -90,7 +90,6 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let queue = BroccoliQueue::builder("amqp://guest:guest@localhost:5672/%2f")
         .pool_connections(5)
-        .failed_message_retry_strategy(Default::default())
         .enable_scheduling(true)  // requires delayed-exchange plugin
         .build()
         .await?;
@@ -99,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "payment_processing",
+            None,
             serde_json::json!({"transaction_id": 789, "amount": 250.00}),
             None,
         )
@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue
         .publish(
             "reminders",
+            None,
             serde_json::json!({"reminder": "Check inventory"}),
             Some(PublishOptions {
                 delay: Some(Duration::from_secs(300)),
