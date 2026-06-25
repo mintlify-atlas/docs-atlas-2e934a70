@@ -1,0 +1,375 @@
+---
+title: "ConsumeOptions — Consumer Behavior Configuration"
+sidebarTitle: "ConsumeOptions"
+description: "Control consumer behavior with ConsumeOptions: configure auto-acknowledgement, fairness queues, consume loop wait time, and handler acknowledgement."
+---
+
+`ConsumeOptions` allows you to configure how messages are consumed from a Broccoli queue. You can control automatic acknowledgment, enable fairness mode for disambiguator-based queues, set loop wait times, and manage handler post-processing acknowledgment using a fluent builder interface.
+
+## Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auto_ack` | `Option<bool>` | `false` | Whether to automatically acknowledge messages immediately upon consumption |
+| `fairness` | `Option<bool>` | `None` | Whether to consume from fairness queues (round-robin across disambiguators); Redis only |
+| `consume_wait` | `Option<Duration>` | Zero | Sleep duration in tight consumer loops to allow interruption |
+| `handler_ack` | `Option<bool>` | `true` | Whether to auto-acknowledge after successful handler execution in `process_messages` |
+
+## Constructor
+
+### `ConsumeOptions::builder() -> ConsumeOptionsBuilder`
+
+Creates a new `ConsumeOptionsBuilder` to construct `ConsumeOptions` with a fluent interface.
+
+```rust
+pub const fn builder() -> ConsumeOptionsBuilder
+```
+
+**Returns:** A new `ConsumeOptionsBuilder` instance.
+
+**Example:**
+
+```rust
+let options = ConsumeOptions::builder()
+    .auto_ack(true)
+    .consume_wait(Duration::from_millis(100))
+    .build();
+```
+
+## Default Implementation
+
+```rust
+impl Default for ConsumeOptions {
+    fn default() -> Self {
+        Self {
+            auto_ack: Some(false),
+            fairness: None,
+            consume_wait: None,
+            handler_ack: Some(true),
+        }
+    }
+}
+```
+
+## Builder Methods
+
+The `ConsumeOptionsBuilder` provides the following methods:
+
+### `auto_ack(auto_ack: bool) -> Self`
+
+Sets whether messages should be automatically acknowledged immediately upon consumption.
+
+```rust
+pub const fn auto_ack(mut self, auto_ack: bool) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `auto_ack` | `bool` | If `true`, messages are auto-acknowledged; if `false`, manual acknowledgment is required |
+
+**Returns:** The updated `ConsumeOptionsBuilder` for chaining.
+
+**Example:**
+
+```rust
+let options = ConsumeOptions::builder()
+    .auto_ack(true)
+    .build();
+```
+
+**Note:** If `auto_ack` is `true`, calling `acknowledge()` or `reject()` on the message will result in an error.
+
+### `fairness(fairness: bool) -> Self`
+
+Enables fairness mode, which distributes messages round-robin across disambiguator sub-queues.
+
+```rust
+pub const fn fairness(mut self, fairness: bool) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `fairness` | `bool` | If `true`, enables round-robin consumption across fairness queues |
+
+**Returns:** The updated `ConsumeOptionsBuilder` for chaining.
+
+**Example:**
+
+```rust
+let options = ConsumeOptions::builder()
+    .fairness(true)
+    .build();
+```
+
+**Important:** Fairness is only supported by the Redis broker implementation.
+
+### `consume_wait(consume_wait: Duration) -> Self`
+
+Sets the sleep duration in tight consumer loops. This allows tokio to interrupt the loop and handle cancellation gracefully.
+
+```rust
+pub const fn consume_wait(mut self, consume_wait: std::time::Duration) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `consume_wait` | `Duration` | The duration to sleep between consume iterations |
+
+**Returns:** The updated `ConsumeOptionsBuilder` for chaining.
+
+**Example:**
+
+```rust
+use std::time::Duration;
+
+let options = ConsumeOptions::builder()
+    .consume_wait(Duration::from_millis(100))
+    .build();
+```
+
+**Note:** Setting this to zero (the default) minimizes performance impact but prevents tokio from interrupting the loop. Increase this value if you need better cancellation responsiveness.
+
+### `handler_ack(handler_ack: bool) -> Self`
+
+Sets whether to automatically acknowledge messages after successful handler execution in `process_messages`.
+
+```rust
+pub const fn handler_ack(mut self, followup: bool) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handler_ack` | `bool` | If `true`, acknowledge after successful handler; if `false`, leave acknowledgment to another actor |
+
+**Returns:** The updated `ConsumeOptionsBuilder` for chaining.
+
+**Example:**
+
+```rust
+let options = ConsumeOptions::builder()
+    .handler_ack(false)
+    .build();
+```
+
+**Note:** When `handler_ack` is `false`, the handler return value controls rejection behavior: errors always reject the message, but successes leave the message untouched. This is useful for handlers that spawn long-running tasks or when a separate reaper process handles acknowledgment.
+
+### `build() -> ConsumeOptions`
+
+Builds the `ConsumeOptions` with the configured values.
+
+```rust
+pub const fn build(self) -> ConsumeOptions
+```
+
+**Returns:** A new `ConsumeOptions` instance with the configured settings.
+
+**Example:**
+
+```rust
+let options = ConsumeOptions::builder()
+    .auto_ack(true)
+    .consume_wait(Duration::from_millis(50))
+    .handler_ack(true)
+    .build();
+```
+
+## Usage Examples
+
+### Auto-Acknowledgment
+
+```rust
+let options = ConsumeOptions::builder()
+    .auto_ack(true)
+    .build();
+
+let message = queue.consume::<EmailTask>("emails", Some(options)).await?;
+// Message is automatically acknowledged; no need to call acknowledge()
+```
+
+### Manual Acknowledgment (Default)
+
+```rust
+let options = ConsumeOptions::builder()
+    .auto_ack(false)
+    .build();
+
+let message = queue.consume::<EmailTask>("emails", Some(options)).await?;
+// Process the message
+send_email(&message.payload).await?;
+// Manually acknowledge
+queue.acknowledge("emails", message).await?;
+```
+
+### Fairness-Enabled Consumer
+
+```rust
+use std::time::Duration;
+
+// Only works with Redis broker
+let options = ConsumeOptions::builder()
+    .fairness(true)
+    .consume_wait(Duration::from_millis(100))
+    .build();
+
+queue
+    .consume::<Task>("tasks", Some(options))
+    .await?;
+```
+
+### Long-Running Task Handler
+
+```rust
+use std::time::Duration;
+
+let options = ConsumeOptions::builder()
+    .handler_ack(false) // Don't auto-ack; handler spawns a long task
+    .consume_wait(Duration::from_millis(100))
+    .build();
+
+queue
+    .process_messages(
+        "jobs",
+        Some(5),
+        Some(options),
+        |message: BrokerMessage<JobPayload>| async move {
+            // Spawn a long-running background task
+            tokio::spawn(async {
+                // This could take hours
+                process_job_async(&message).await
+            });
+            Ok(()) // Return success immediately
+            // External reaper will handle acknowledgment
+        },
+    )
+    .await?;
+```
+
+### Processing with Loop Interruption
+
+```rust
+use std::time::Duration;
+
+// Allow tokio to interrupt the loop
+let options = ConsumeOptions::builder()
+    .consume_wait(Duration::from_millis(500))
+    .build();
+
+let task = tokio::spawn(
+    queue.process_messages(
+        "emails",
+        None,
+        Some(options),
+        |message: BrokerMessage<EmailTask>| async move {
+            send_email(&message.payload).await
+        },
+    )
+);
+
+// Can cleanly cancel the task
+tokio::time::sleep(Duration::from_secs(10)).await;
+task.abort();
+```
+
+### Process Messages with Custom Handlers
+
+```rust
+use std::time::Duration;
+
+let options = ConsumeOptions::builder()
+    .handler_ack(true) // Auto-acknowledge on success
+    .consume_wait(Duration::from_millis(100))
+    .build();
+
+async fn handle_message(msg: BrokerMessage<Task>) -> Result<String, BroccoliError> {
+    println!("Processing: {}", msg.payload.name);
+    Ok("completed".to_string())
+}
+
+async fn on_success(msg: BrokerMessage<Task>, _result: String) -> Result<(), BroccoliError> {
+    println!("Task {} done", msg.payload.id);
+    Ok(())
+}
+
+async fn on_error(msg: BrokerMessage<Task>, error: BroccoliError) -> Result<(), BroccoliError> {
+    eprintln!("Task {} failed: {:?}", msg.payload.id, error);
+    Ok(())
+}
+
+queue
+    .process_messages_with_handlers(
+        "tasks",
+        Some(3),
+        Some(options),
+        handle_message,
+        on_success,
+        on_error,
+    )
+    .await?;
+```
+
+## Important Notes
+
+### Auto-Ack vs Manual Ack
+
+- **`auto_ack: true`** — Messages are acknowledged immediately when consumed. Attempting to manually acknowledge or reject will fail.
+- **`auto_ack: false`** — You must call `acknowledge()` or `reject()` after processing. Unacknowledged messages remain in the queue.
+
+### Handler Ack vs Auto Ack
+
+- **`auto_ack`** — Controls behavior in `consume()`, `try_consume()`, etc.
+- **`handler_ack`** — Controls behavior in `process_messages()` and `process_messages_with_handlers()`
+
+Setting `handler_ack: false` is useful for:
+- Handlers that spawn long-running background tasks
+- External reaper processes that handle acknowledgment asynchronously
+- Implementing custom retry logic
+
+### Fairness Queues
+
+Fairness mode enables round-robin distribution across messages with different `disambiguator` values:
+
+```rust
+// Publisher sends with different disambiguators
+queue.publish("tasks", Some("user1".to_string()), &task1, None).await?;
+queue.publish("tasks", Some("user2".to_string()), &task2, None).await?;
+queue.publish("tasks", Some("user1".to_string()), &task3, None).await?;
+
+// Consumer receives fairness: user1 → user2 → user1
+let options = ConsumeOptions::builder()
+    .fairness(true)
+    .build();
+```
+
+**Note:** Fairness is only supported by the Redis broker.
+
+### Loop Interruption
+
+When using `process_messages()` without concurrency (sequential mode), the `consume_wait` option is critical for clean task cancellation:
+
+```rust
+// Without consume_wait, the task might not be interruptible
+let task = tokio::spawn(
+    queue.process_messages(
+        "emails",
+        None,
+        None, // Default consume_wait is zero
+        handler,
+    )
+);
+
+tokio::time::sleep(Duration::from_secs(1)).await;
+task.abort(); // May not cancel immediately
+
+// With consume_wait, cancellation is clean
+let options = ConsumeOptions::builder()
+    .consume_wait(Duration::from_millis(100))
+    .build();
+```

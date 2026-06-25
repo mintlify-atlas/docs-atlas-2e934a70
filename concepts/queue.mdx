@@ -1,0 +1,173 @@
+---
+title: "The BroccoliQueue: How the Queue API Works"
+sidebarTitle: "Queue"
+description: "Understand how BroccoliQueue manages broker connections, the builder pattern, and the lifecycle of publish, consume, acknowledge, and reject operations."
+---
+
+BroccoliQueue is the central interface for interacting with Broccoli's message broker system. It provides a clean, async-first API for publishing messages to topics, consuming them from processing queues, and managing their lifecycle. Built on top of a pluggable broker backend, BroccoliQueue abstracts away broker-specific details while allowing you to focus on your message-driven logic.
+
+## The Builder Pattern
+
+BroccoliQueue follows the builder pattern for configuration and instantiation, allowing you to chain configuration methods before building the queue. Start by calling `BroccoliQueue::builder(url)` with your broker connection URL, chain any desired configuration methods, and finally call `.build().await` to establish the connection.
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .pool_connections(5)
+        .failed_message_retry_strategy(
+            broccoli_queue::queue::RetryStrategy::new().with_attempts(5)
+        )
+        .enable_scheduling(false)
+        .build()
+        .await?;
+    
+    Ok(())
+}
+```
+
+## Builder Configuration Options
+
+The following table describes the available methods when building a BroccoliQueue:
+
+| Method | Type | Default | Description |
+|--------|------|---------|-------------|
+| `pool_connections(n)` | `u8` | 10 | Number of connections to maintain in the connection pool |
+| `failed_message_retry_strategy(s)` | `RetryStrategy` | 3 retries | Retry configuration for failed messages |
+| `enable_scheduling(bool)` | `bool` | false | Enable support for scheduled/delayed messages |
+
+### RetryStrategy
+
+The `RetryStrategy` struct controls how failed messages are handled:
+
+```rust
+use broccoli_queue::queue::RetryStrategy;
+
+// Default: retry enabled, 3 attempts
+let default_strategy = RetryStrategy::default();
+
+// Custom configuration
+let custom_strategy = RetryStrategy::new()
+    .with_attempts(5)
+    .retry_failed(true);
+```
+
+## Message Lifecycle
+
+Messages in Broccoli flow through a well-defined lifecycle:
+
+```
+Publish
+   ↓
+Main Queue (ready to be processed)
+   ↓
+Processing Queue (being worked on after consume)
+   ↓
+├─ Acknowledge → Removed from queue (successfully processed)
+└─ Reject → Retry or move to dead-letter queue (failed processing)
+```
+
+### Queue States
+
+- **Main Queue**: When a message is published, it enters the main queue. Messages here are ready to be consumed and processed.
+- **Processing Queue**: When a consumer calls `consume()`, the message moves from the main queue to the processing queue. This prevents duplicate processing if a consumer crashes.
+- **Acknowledged**: When `acknowledge()` is called, the message is permanently removed from the processing queue, marking it as successfully processed.
+- **Rejected**: When `reject()` is called, the message is removed from the processing queue. If the retry limit has not been exceeded, it returns to the main queue for retry. Otherwise, it moves to a dead-letter queue for later inspection.
+
+## Checking Queue Size
+
+Use the `size()` method to get the current message count in your queue:
+
+```rust
+let queue_sizes = queue.size("my_queue").await?;
+
+for (queue_name, count) in queue_sizes {
+    println!("{}: {} messages", queue_name, count);
+}
+```
+
+The `size()` method returns a `HashMap<String, u64>` mapping queue names to message counts. For fairness queues (when using disambiguators), this map will contain an entry for each disambiguator queue. For normal queues, it contains a single entry with the main queue name.
+
+## Publishing Messages
+
+Publish messages to a topic using the `publish()` method:
+
+```rust
+use broccoli_queue::queue::{BroccoliQueue, PublishOptions};
+use serde::{Serialize, Deserialize};
+use std::time::Duration;
+
+#[derive(Clone, Serialize, Deserialize)]
+struct JobPayload {
+    id: String,
+    task_name: String,
+}
+
+let queue = BroccoliQueue::builder("redis://localhost:6379").build().await?;
+
+let payload = JobPayload {
+    id: "job-123".to_string(),
+    task_name: "send_email".to_string(),
+};
+
+let message = queue
+    .publish("jobs", None, &payload, None)
+    .await?;
+
+println!("Published message with ID: {}", message.task_id);
+```
+
+You can also publish with options like delay or TTL:
+
+```rust
+let options = PublishOptions::builder()
+    .delay(Duration::from_secs(30))
+    .ttl(Duration::from_secs(3600))
+    .build();
+
+queue
+    .publish("jobs", None, &payload, Some(options))
+    .await?;
+```
+
+## Consuming Messages
+
+Consume messages from a topic using the `consume()` method, which blocks until a message is available:
+
+```rust
+let message = queue.consume::<JobPayload>("jobs", None).await?;
+
+println!("Consumed: {:?}", message.payload);
+
+// Process the message
+// ...
+
+// Acknowledge on success
+queue.acknowledge("jobs", message).await?;
+
+// Or reject on failure
+// queue.reject("jobs", message).await?;
+```
+
+## Processing with Handlers
+
+For convenience, use `process_messages()` to automatically consume and handle messages:
+
+```rust
+queue
+    .process_messages(
+        "jobs",
+        Some(5), // concurrency level
+        None,
+        |message: broccoli_queue::brokers::broker::BrokerMessage<JobPayload>| async move {
+            println!("Processing: {:?}", message.payload);
+            // Your processing logic here
+            Ok(())
+        },
+    )
+    .await?;
+```
+
+This method automatically acknowledges messages on success and rejects them on error. It will run until interrupted or returns an error.

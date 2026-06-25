@@ -1,0 +1,67 @@
+---
+title: "Broccoli: Async Job Queue for Rust Applications"
+sidebarTitle: "Introduction"
+description: "Broccoli is a Rust-native async message queue library inspired by Celery, supporting Redis, RabbitMQ, and SurrealDB with type-safe message handling."
+---
+
+Broccoli is a robust, high-performance message queue library for Rust applications. Inspired by the simplicity and power of Celery, Broccoli brings reliable asynchronous job processing to Rust with the benefits of compile-time type safety and zero-cost abstractions. Whether you're building microservices, distributed systems, or real-time data pipelines, Broccoli provides a simple yet flexible API for publishing, consuming, and processing messages across multiple message brokers.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card
+    title="Asynchronous Processing"
+    icon="bolt"
+    description="Non-blocking message publishing and consumption built on Tokio for high-performance async workloads"
+  />
+  <Card
+    title="Multi-Broker Support"
+    icon="network-wired"
+    description="Choose your broker: Redis, RabbitMQ, or SurrealDB with a unified API"
+  />
+  <Card
+    title="Type-Safe Messages"
+    icon="shield"
+    description="Compile-time verified message schemas with full serialization support using Serde"
+  />
+  <Card
+    title="Retry Strategies"
+    icon="rotate"
+    description="Built-in configurable retry logic for failed messages with exponential backoff"
+  />
+  <Card
+    title="Fairness Queues"
+    icon="balance-scale"
+    description="Prevent message starvation with fairness-based queue processing"
+  />
+  <Card
+    title="Message Scheduling"
+    icon="calendar"
+    description="Publish messages to be delivered at specific times or after a delay"
+  />
+</CardGroup>
+
+## Why Broccoli?
+
+If you're familiar with Celery but want to leverage Rust's performance and type safety, Broccoli is your answer. While Celery is battle-tested in Python ecosystems, Broccoli brings the same proven philosophy to Rust with:
+
+- **Type Safety**: Messages are validated at compile-time, eliminating entire classes of runtime errors
+- **Performance**: Leverages Rust's zero-cost abstractions and async/await for minimal overhead
+- **Multi-Broker Flexibility**: Start with Redis for simplicity, switch to RabbitMQ for advanced features, or use SurrealDB for embedded scenarios—all with the same API
+- **Simple API**: Intuitive builder patterns and familiar async/await semantics
+
+## Roadmap
+
+The Broccoli project is actively developed with exciting features coming:
+
+- [x] **Redis broker** — Production-ready with connection pooling and fairness queues
+- [x] **RabbitMQ broker** — Full AMQP support with delayed exchange plugin compatibility
+- [ ] **Kafka broker** — Coming soon for high-throughput scenarios
+- [ ] **Proc macros** — Simplified worker definitions with derive macros
+- [ ] **Metrics** — Built-in observability with Prometheus-compatible metrics
+- [ ] **Web interface** — Job monitoring and management dashboard
+- [ ] **Additional message patterns** — Dead letter queues, message transformations, and more
+
+## Get Started
+
+Ready to build your first job queue? Check out the [Quickstart](/quickstart) guide to get up and running in minutes, or jump to [Installation](/installation) to learn about configuration options and feature flags.

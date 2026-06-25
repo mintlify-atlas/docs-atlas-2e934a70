@@ -1,0 +1,174 @@
+---
+title: "RabbitMQ Broker for Broccoli Queue"
+sidebarTitle: "RabbitMQ"
+description: "Use RabbitMQ as Broccoli's message broker via AMQP. Set up the connection, configure the delayed-exchange plugin for scheduling, and understand queue topology."
+---
+
+RabbitMQ is an enterprise-grade message broker that provides reliability, flexibility, and advanced routing capabilities for Broccoli. It is well-suited for complex message processing workflows and large-scale deployments.
+
+## Installation
+
+Enable the RabbitMQ feature in your `Cargo.toml`:
+
+```toml
+broccoli_queue = { version = "0.4", default-features = false, features = ["rabbitmq"] }
+```
+
+## Connection URL Format
+
+RabbitMQ connections use the AMQP protocol with the following URL format:
+
+```
+amqp://[user:password@]host[:port][/vhost]
+```
+
+The default connection URL is:
+
+```
+amqp://guest:guest@localhost:5672/%2f
+```
+
+Where `%2f` represents the default virtual host `/`.
+
+## Running RabbitMQ with Docker
+
+To quickly start a RabbitMQ instance for development and testing:
+
+```bash
+docker run -d --name rabbitmq \
+  -p 5672:5672 -p 15672:15672 \
+  rabbitmq:3-management
+```
+
+This starts RabbitMQ with:
+- AMQP port `5672` exposed
+- Management UI on `http://localhost:15672` (default credentials: `guest:guest`)
+
+## Scheduling Support
+
+Broccoli's delayed and scheduled message features require the **RabbitMQ Delayed Message Exchange** plugin. This plugin allows messages to be held for a specified delay before being delivered to consumers.
+
+### Enabling the Plugin
+
+<Steps>
+  <Step title="Enable in a running container">
+    ```bash
+    docker exec rabbitmq rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+    ```
+  </Step>
+  
+  <Step title="Or use the provided Dockerfile">
+    The repository includes `Dockerfile.rabbitmq` which pre-installs the delayed-exchange plugin:
+    
+    ```bash
+    docker build -f Dockerfile.rabbitmq -t broccoli-rabbitmq .
+    docker run -d --name rabbitmq \
+      -p 5672:5672 -p 15672:15672 \
+      broccoli-rabbitmq
+    ```
+  </Step>
+</Steps>
+
+## Connection Pooling
+
+RabbitMQ connections are managed using the `deadpool-lapin` connection pool. The pool size is configured via the `.pool_connections()` builder method (default: 10).
+
+```rust
+let queue = BroccoliQueue::builder("amqp://guest:guest@localhost:5672/%2f")
+    .pool_connections(5)
+    .build()
+    .await?;
+```
+
+## Complete Example
+
+```rust
+use broccoli_queue::{BroccoliQueue, PublishOptions};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("amqp://guest:guest@localhost:5672/%2f")
+        .pool_connections(5)
+        .failed_message_retry_strategy(Default::default())
+        .enable_scheduling(true)  // requires delayed-exchange plugin
+        .build()
+        .await?;
+
+    // Publish a message
+    queue
+        .publish(
+            "payment_processing",
+            serde_json::json!({"transaction_id": 789, "amount": 250.00}),
+            None,
+        )
+        .await?;
+
+    // Publish a delayed message (requires plugin)
+    queue
+        .publish(
+            "reminders",
+            serde_json::json!({"reminder": "Check inventory"}),
+            Some(PublishOptions {
+                delay: Some(Duration::from_secs(300)),
+                ..Default::default()
+            }),
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+## RabbitMQ-Specific Behavior
+
+### Exchange and Queue Binding
+
+Broccoli creates a persistent exchange named `broccoli` and binds queues to it. Each queue corresponds to a message topic in Broccoli.
+
+### Message Properties
+
+Messages published to RabbitMQ include:
+- **Message ID**: Set to the unique task ID from Broccoli
+- **Delivery Mode**: Persistent (mode 2) to survive broker restarts
+- **Priority**: Broccoli's priority (1-5) is mapped to RabbitMQ priority
+- **Headers**: Include attempt count and delay metadata
+
+### Limitations
+
+<Warning>
+Fairness queues are not supported with the RabbitMQ backend. All messages are processed in a single queue per topic.
+</Warning>
+
+<Warning>
+Calling `enable_scheduling(true)` without the delayed-exchange plugin will result in a runtime error. Ensure the plugin is enabled before publishing delayed messages.
+</Warning>
+
+## Troubleshooting
+
+### Plugin not found error
+
+If you encounter an error about the delayed message exchange plugin not being available:
+
+1. Verify the plugin is installed:
+   ```bash
+   docker exec rabbitmq rabbitmq-plugins list
+   ```
+
+2. The output should show `rabbitmq_delayed_message_exchange`:
+   ```
+   [E*] rabbitmq_delayed_message_exchange <version>
+   ```
+
+3. If not installed, enable it:
+   ```bash
+   docker exec rabbitmq rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+   docker restart rabbitmq
+   ```
+
+### Connection refused
+
+If you get connection refused errors:
+- Ensure RabbitMQ is running: `docker ps | grep rabbitmq`
+- Check that AMQP port 5672 is exposed
+- Verify credentials are correct (default: guest:guest)

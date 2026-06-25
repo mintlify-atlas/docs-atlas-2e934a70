@@ -1,0 +1,270 @@
+---
+title: "PublishOptions — Message Delivery Configuration"
+sidebarTitle: "PublishOptions"
+description: "Configure message delivery behavior with PublishOptions: set TTL, delay, scheduled_at time, and priority level when publishing to a Broccoli queue."
+---
+
+`PublishOptions` allows you to configure how messages are delivered when publishing to a Broccoli queue. You can set time-to-live limits, delivery delays, scheduled times, and priority levels using a fluent builder interface.
+
+## Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `ttl` | `Option<Duration>` | `None` | Time-to-live; message expires if not consumed within this duration |
+| `delay` | `Option<Duration>` | `None` | Delay before the message becomes available for consumption |
+| `scheduled_at` | `Option<OffsetDateTime>` | `None` | Absolute scheduled delivery time; message won't be available until this time |
+| `priority` | `Option<u8>` | `None` | Priority level (1-5); 1 is highest priority, 5 is lowest |
+
+## Constructor
+
+### `PublishOptions::builder() -> PublishOptionsBuilder`
+
+Creates a new `PublishOptionsBuilder` to construct `PublishOptions` with a fluent interface.
+
+```rust
+pub const fn builder() -> PublishOptionsBuilder
+```
+
+**Returns:** A new `PublishOptionsBuilder` instance.
+
+**Example:**
+
+```rust
+let options = PublishOptions::builder()
+    .ttl(Duration::from_secs(3600))
+    .priority(1)
+    .build();
+```
+
+## Builder Methods
+
+The `PublishOptionsBuilder` provides the following methods:
+
+### `ttl(duration: Duration) -> Self`
+
+Sets the time-to-live duration for the message. If the message is not consumed within this duration, it may expire.
+
+```rust
+pub const fn ttl(mut self, duration: Duration) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `duration` | `Duration` | The TTL duration |
+
+**Returns:** The updated `PublishOptionsBuilder` for chaining.
+
+**Example:**
+
+```rust
+let options = PublishOptions::builder()
+    .ttl(Duration::from_secs(86400)) // 24 hours
+    .build();
+```
+
+### `delay(duration: Duration) -> Self`
+
+Sets a delay before the message becomes available for consumption.
+
+```rust
+pub const fn delay(mut self, duration: Duration) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `duration` | `Duration` | The delay duration |
+
+**Returns:** The updated `PublishOptionsBuilder` for chaining.
+
+**Example:**
+
+```rust
+let options = PublishOptions::builder()
+    .delay(Duration::from_secs(300)) // 5 minutes
+    .build();
+```
+
+### `schedule_at(time: OffsetDateTime) -> Self`
+
+Sets an absolute scheduled delivery time. The message will not be available for consumption until this time.
+
+```rust
+pub const fn schedule_at(mut self, time: OffsetDateTime) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `time` | `OffsetDateTime` | The scheduled delivery time |
+
+**Returns:** The updated `PublishOptionsBuilder` for chaining.
+
+**Example:**
+
+```rust
+use time::OffsetDateTime;
+
+let scheduled_time = OffsetDateTime::now_utc() + Duration::from_secs(3600);
+
+let options = PublishOptions::builder()
+    .schedule_at(scheduled_time)
+    .build();
+```
+
+### `priority(p: u8) -> Self`
+
+Sets the priority level for the message. Messages with higher priority (lower numbers) are processed first.
+
+```rust
+pub fn priority(mut self, priority: u8) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `priority` | `u8` | Priority level between 1 and 5 (inclusive) |
+
+**Returns:** The updated `PublishOptionsBuilder` for chaining.
+
+**Panics:** If the priority is not between 1 and 5.
+
+**Example:**
+
+```rust
+let options = PublishOptions::builder()
+    .priority(1) // Highest priority
+    .build();
+```
+
+### `build() -> PublishOptions`
+
+Builds the `PublishOptions` with the configured values.
+
+```rust
+pub const fn build(self) -> PublishOptions
+```
+
+**Returns:** A new `PublishOptions` instance with the configured settings.
+
+**Example:**
+
+```rust
+let options = PublishOptions::builder()
+    .ttl(Duration::from_secs(3600))
+    .priority(2)
+    .build();
+```
+
+## Usage Examples
+
+### Basic TTL
+
+```rust
+use std::time::Duration;
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .build()
+    .await?;
+
+let options = PublishOptions::builder()
+    .ttl(Duration::from_secs(3600)) // 1 hour
+    .build();
+
+queue
+    .publish("emails", None, &email_task, Some(options))
+    .await?;
+```
+
+### Delayed Delivery
+
+```rust
+use std::time::Duration;
+
+let options = PublishOptions::builder()
+    .delay(Duration::from_secs(600)) // 10 minutes
+    .build();
+
+queue
+    .publish("emails", None, &email_task, Some(options))
+    .await?;
+```
+
+### Scheduled Delivery
+
+```rust
+use time::OffsetDateTime;
+
+let scheduled_time = OffsetDateTime::now_utc() + std::time::Duration::from_secs(86400);
+
+let options = PublishOptions::builder()
+    .schedule_at(scheduled_time)
+    .build();
+
+queue
+    .publish("reports", None, &report_task, Some(options))
+    .await?;
+```
+
+### Priority-Based Publishing
+
+```rust
+// High priority message
+let urgent_options = PublishOptions::builder()
+    .priority(1)
+    .build();
+
+queue
+    .publish("alerts", None, &urgent_alert, Some(urgent_options))
+    .await?;
+
+// Low priority message
+let normal_options = PublishOptions::builder()
+    .priority(5)
+    .build();
+
+queue
+    .publish("notifications", None, &notification, Some(normal_options))
+    .await?;
+```
+
+### Combined Options
+
+```rust
+use std::time::Duration;
+use time::OffsetDateTime;
+
+let options = PublishOptions::builder()
+    .ttl(Duration::from_secs(7200)) // 2 hours
+    .priority(2)
+    .schedule_at(OffsetDateTime::now_utc() + Duration::from_secs(1800))
+    .build();
+
+queue
+    .publish("tasks", None, &task, Some(options))
+    .await?;
+```
+
+## Important Notes
+
+- **Message Scheduling:** Scheduling options require enabling scheduling on the queue builder:
+
+  ```rust
+  let queue = BroccoliQueue::builder("redis://localhost:6379")
+      .enable_scheduling(true)
+      .build()
+      .await?;
+  ```
+
+- **RabbitMQ Scheduling:** If using RabbitMQ with scheduling enabled, you must install the [RabbitMQ Delayed Exchange plugin](https://www.rabbitmq.com/blog/2015/04/16/scheduling-messages-with-rabbitmq).
+
+- **Priority Support:** Priority levels are supported by the broker implementation. Check your broker's documentation for details.
+
+- **TTL Expiration:** When a message's TTL expires, it may be automatically removed by the broker depending on the implementation.
+
+- **Delay vs Schedule:** Use `delay()` for relative delays from the current time, and `schedule_at()` for absolute scheduled times.

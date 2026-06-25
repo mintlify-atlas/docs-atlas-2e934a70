@@ -1,0 +1,138 @@
+---
+title: "BrokerConfig — Low-Level Broker Configuration"
+sidebarTitle: "BrokerConfig"
+description: "BrokerConfig controls low-level broker behavior including connection pool size, retry settings, and scheduling. Usually configured via BroccoliQueueBuilder."
+---
+
+`BrokerConfig` is the internal configuration struct that controls low-level broker behavior. While it is the underlying configuration mechanism, most users will configure these settings through the fluent `BroccoliQueueBuilder` API rather than constructing `BrokerConfig` directly. Understanding `BrokerConfig` is useful when implementing custom broker traits or conducting advanced testing.
+
+## Configuration Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `retry_attempts` | `Option<u8>` | Some(3) | Maximum number of retry attempts for failed messages. If a message fails after this many attempts, it is moved to the failed queue. |
+| `retry_failed` | `Option<bool>` | Some(true) | Whether to retry failed messages. If `false`, failed messages are immediately moved to the dead-letter queue. |
+| `pool_connections` | `Option<u8>` | Some(10) | Number of connections to maintain in the connection pool for the broker. Larger values increase resource usage but allow more concurrent operations. |
+| `enable_scheduling` | `Option<bool>` | Some(false) | Whether to enable delayed/scheduled message delivery. Requires broker-specific plugins (e.g., RabbitMQ delayed-exchange plugin). |
+| `surrealdb_connection` | `Option<Surreal<Any>>` | None | (SurrealDB feature only) An existing SurrealDB connection to reuse. If provided, Broccoli will use this connection instead of creating a new one. |
+
+## Default Configuration
+
+The `Default` implementation provides sensible defaults suitable for most applications:
+
+```rust
+use broccoli_queue::brokers::broker::BrokerConfig;
+
+let config = BrokerConfig::default();
+// Equivalent to:
+// BrokerConfig {
+//     retry_attempts: Some(3),
+//     retry_failed: Some(true),
+//     pool_connections: Some(10),
+//     enable_scheduling: Some(false),
+//     #[cfg(feature = "surrealdb")]
+//     surrealdb_connection: None,
+// }
+```
+
+## Builder Pattern via BroccoliQueueBuilder
+
+In normal usage, you configure these fields through the `BroccoliQueueBuilder` fluent API. The builder automatically creates a `BrokerConfig` when you call `build()`:
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .failed_message_retry_strategy(
+        broccoli_queue::queue::RetryStrategy::new()
+            .with_attempts(5)
+            .retry_failed(true)
+    )
+    .pool_connections(20)
+    .enable_scheduling(true)
+    .build()
+    .await?;
+```
+
+The builder methods map to `BrokerConfig` fields as follows:
+- `.failed_message_retry_strategy(strategy)` — sets `retry_attempts` and `retry_failed`
+- `.pool_connections(n)` — sets `pool_connections`
+- `.enable_scheduling(enabled)` — sets `enable_scheduling`
+
+## When to Use Directly
+
+You should construct `BrokerConfig` directly only in these scenarios:
+
+1. **Implementing a custom `Broker` trait** — broker implementations receive a `BrokerConfig` to guide their behavior.
+2. **Advanced testing** — when unit testing broker implementations in isolation.
+3. **Programmatic configuration** — when you need to generate configuration based on runtime environment variables or configuration files.
+
+```rust
+use broccoli_queue::brokers::broker::BrokerConfig;
+
+// Example: Creating a config with custom values
+let config = BrokerConfig {
+    retry_attempts: Some(5),
+    retry_failed: Some(true),
+    pool_connections: Some(15),
+    enable_scheduling: Some(false),
+    #[cfg(feature = "surrealdb")]
+    surrealdb_connection: None,
+};
+```
+
+## BrokerType Enum
+
+`BrokerType` is an internal enum used by Broccoli to determine which broker implementation to instantiate based on the URL scheme. It has three variants (enabled based on feature flags):
+
+| Variant | Selected When | Example URL |
+|---------|---------------|-------------|
+| `BrokerType::Redis` | URL starts with `redis://` or `rediss://` | `redis://localhost:6379` |
+| `BrokerType::RabbitMQ` | URL starts with `amqp://` or `amqps://` | `amqp://localhost:5672` |
+| `BrokerType::SurrealDB` | URL starts with `ws://`, `wss://`, or `mem://` | `ws://localhost:8000` |
+
+The routing is automatic—you simply provide a broker URL, and Broccoli selects the appropriate implementation:
+
+```rust
+// Redis is selected automatically
+let queue = BroccoliQueue::builder("redis://localhost:6379").build().await?;
+
+// RabbitMQ is selected automatically
+let queue = BroccoliQueue::builder("amqp://guest:guest@localhost:5672").build().await?;
+
+// SurrealDB is selected automatically
+let queue = BroccoliQueue::builder("ws://localhost:8000").build().await?;
+```
+
+<Note>
+The `BrokerType` enum is primarily for internal use and is not exposed in the public API. URL routing happens automatically during broker connection.
+</Note>
+
+## RabbitMQ Scheduling Plugin
+
+If you enable scheduling with RabbitMQ (`enable_scheduling: Some(true)`), you must install the RabbitMQ delayed-exchange plugin. Without it, scheduled messages will not be delayed. See the [RabbitMQ scheduling blog post](https://www.rabbitmq.com/blog/2015/04/16/scheduling-messages-with-rabbitmq) for installation instructions.
+
+```rust
+let queue = BroccoliQueue::builder("amqp://localhost:5672")
+    .enable_scheduling(true)  // Requires delayed-exchange plugin
+    .build()
+    .await?;
+```
+
+## SurrealDB Connection Reuse
+
+With the `surrealdb` feature, you can provide an existing SurrealDB connection to avoid creating a new one:
+
+```rust
+#[cfg(feature = "surrealdb")]
+{
+    use surrealdb::Surreal;
+    use surrealdb::engine::any::Any;
+    
+    let db = Surreal::<Any>::new::<String>("ws://localhost:8000".into()).await?;
+    
+    let queue = BroccoliQueue::builder_with(db).build().await?;
+}
+```
+
+This is useful when you already have a database connection and want to avoid the overhead of creating a second one.

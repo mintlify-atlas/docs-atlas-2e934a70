@@ -1,0 +1,122 @@
+---
+title: "BrokerMessage — Typed Message Wrapper"
+sidebarTitle: "BrokerMessage"
+description: "BrokerMessage<T> wraps your payload with queue metadata including a unique task_id, attempt counter, and optional disambiguator for fairness queues."
+---
+
+`BrokerMessage<T>` is the generic message type that users receive in consumer handlers and work with throughout the Broccoli queue system. It wraps your application-specific payload with essential queue metadata, enabling tracking, retries, and fairness-queue operations. Every message published to Broccoli is automatically wrapped in a `BrokerMessage`, and every message consumed is deserialized back into this type.
+
+## Generic Constraints
+
+`BrokerMessage<T>` requires that the payload type `T` implements:
+- `Clone` — for internal message handling and retries
+- `Serialize` — to serialize messages for broker storage
+- `DeserializeOwned` — to deserialize messages during consumption
+
+## Struct Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `uuid::Uuid` | Unique identifier automatically generated when the message is created. Use this to track message identity across the system. |
+| `payload` | `T` | The deserialized message content—your application data. |
+| `attempts` | `u8` | Number of times this message has been attempted (0 on first publish, incremented on each retry). |
+| `disambiguator` | `Option<String>` | Optional fairness queue grouping key, set at publish time to enable fair distribution across multiple consumer groups. |
+
+## Construction
+
+### `BrokerMessage::new(payload: T, disambiguator: Option<String>) -> Self`
+
+Creates a new message with the given payload and optional disambiguator. This constructor:
+- Generates a new `uuid::Uuid` for `task_id`
+- Sets `attempts` to 0
+- Leaves `metadata` empty (internal use only)
+
+In most cases, **you won't call this directly**. The `publish` and `publish_batch` methods on `BroccoliQueue` handle message creation for you. However, if implementing a custom broker or testing, you may construct messages manually:
+
+```rust
+use broccoli_queue::brokers::broker::BrokerMessage;
+
+let payload = MyJob { id: "job-123".to_string() };
+let msg = BrokerMessage::new(payload, Some("customer-456".to_string()));
+```
+
+## Usage in Handlers
+
+When consuming messages with `process_messages`, you receive a fully typed `BrokerMessage<T>`:
+
+```rust
+use broccoli_queue::brokers::broker::BrokerMessage;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MyJob {
+    id: String,
+    task_name: String,
+}
+
+queue.process_messages("jobs", None, None,
+    |msg: BrokerMessage<MyJob>| async move {
+        println!("task_id: {}", msg.task_id);
+        println!("attempts: {}", msg.attempts);
+        println!("payload: {:?}", msg.payload);
+        Ok(())
+    }
+).await?;
+```
+
+## Using `attempts` for Custom Backoff
+
+The `attempts` field is incremented each time a message is retried after failure. Use it to implement custom retry logic or different handling strategies:
+
+```rust
+queue.process_messages("jobs", None, None,
+    |msg: BrokerMessage<MyJob>| async move {
+        if msg.attempts > 2 {
+            // Final retry—log more aggressively or perform lighter processing
+            eprintln!("Final retry for job {}: {:?}", msg.task_id, msg.payload);
+        } else {
+            println!("Attempt {}: processing job {}", msg.attempts + 1, msg.payload.id);
+        }
+        Ok(())
+    }
+).await?;
+```
+
+<Note>
+The `metadata` field on `BrokerMessage` is internal and not directly accessible from user code. It is used by the broker implementations for tracking additional state.
+</Note>
+
+## QueueStatus Struct
+
+When using the `management` feature, you can retrieve queue status information via `queue.queue_status()`. This returns a `QueueStatus` struct with the following fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | The name of the queue. |
+| `queue_type` | `QueueType` | The type of queue: `Main`, `Processing`, `Failed`, or `Fairness`. |
+| `size` | `usize` | Number of messages currently in the main queue. |
+| `processing` | `usize` | Number of messages currently being processed (in-flight). |
+| `failed` | `usize` | Number of messages in the dead-letter / failed queue. |
+| `disambiguator_count` | `Option<usize>` | For fairness queues, the number of distinct disambiguator sub-queues. `None` for non-fairness queues. |
+
+### QueueType Enum
+
+The `queue_type` field is one of:
+- `QueueType::Main` — the main message queue
+- `QueueType::Processing` — messages currently being processed
+- `QueueType::Failed` — messages that exceeded retry limits
+- `QueueType::Fairness` — a fairness-queue variant
+
+### Example
+
+```rust
+#[cfg(feature = "management")]
+{
+    let status = queue.queue_status("orders".to_string(), None).await?;
+    println!("Queue '{}': {} messages", status.name, status.size);
+    println!("Processing: {} | Failed: {}", status.processing, status.failed);
+    
+    if let Some(disambiguator_count) = status.disambiguator_count {
+        println!("Fairness queue with {} sub-queues", disambiguator_count);
+    }
+}
+```

@@ -1,0 +1,262 @@
+---
+title: "SurrealDB Broker for Broccoli Queue"
+sidebarTitle: "SurrealDB"
+description: "Use SurrealDB as an embedded or remote message broker for Broccoli. Ideal for testing and development with in-memory queues or persistent SurrealDB instances."
+---
+
+SurrealDB is a versatile message broker backend for Broccoli, offering both embedded (in-memory) and remote (WebSocket) operation modes. It is particularly useful for development, testing, and embedded applications where you want to avoid external broker dependencies.
+
+## Installation
+
+Enable the SurrealDB feature in your `Cargo.toml`:
+
+```toml
+broccoli_queue = { version = "0.4", default-features = false, features = ["surrealdb"] }
+```
+
+## Connection Modes
+
+SurrealDB supports two connection modes with Broccoli:
+
+### In-Memory (Embedded)
+
+For testing and development without an external SurrealDB instance:
+
+```rust
+use broccoli_queue::BroccoliQueue;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("mem://")
+        .build()
+        .await?;
+
+    // Use the queue for testing
+    queue
+        .publish(
+            "test_queue",
+            serde_json::json!({"test": "data"}),
+            None,
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+### Remote (WebSocket)
+
+Connect to a running SurrealDB instance via WebSocket:
+
+```rust
+use broccoli_queue::BroccoliQueue;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("ws://localhost:8000")
+        .build()
+        .await?;
+
+    // Use the queue
+    queue
+        .publish(
+            "events",
+            serde_json::json!({"event": "user_signup"}),
+            None,
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+## Using an Existing SurrealDB Connection
+
+If you have an existing SurrealDB connection you want to use, you can pass it directly using `builder_with`:
+
+```rust
+use broccoli_queue::BroccoliQueue;
+use surrealdb::Surreal;
+use surrealdb::engine::any::Any;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize your SurrealDB connection
+    let db: Surreal<Any> = Surreal::new::<surrealdb::engine::any::Any>("mem://").await?;
+    db.use_ns("my_app").use_db("my_db").run().await?;
+
+    // Pass it to Broccoli
+    let queue = BroccoliQueue::builder_with(db)
+        .build()
+        .await?;
+
+    // Use the queue
+    queue
+        .publish(
+            "tasks",
+            serde_json::json!({"task_id": 1, "action": "process"}),
+            None,
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+<Note>
+The `builder_with` constructor is only available when the `surrealdb` feature is enabled. It allows you to pass an existing `Surreal<Any>` connection for fine-grained control over database initialization and configuration.
+</Note>
+
+## Use Cases
+
+### Development & Testing
+
+Use the in-memory mode for rapid development and testing without infrastructure overhead:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use broccoli_queue::BroccoliQueue;
+
+    #[tokio::test]
+    async fn test_message_publishing() {
+        let queue = BroccoliQueue::builder("mem://")
+            .build()
+            .await
+            .expect("Failed to create queue");
+
+        queue
+            .publish("test", serde_json::json!({"id": 1}), None)
+            .await
+            .expect("Failed to publish");
+    }
+}
+```
+
+### Embedded Applications
+
+Run a complete message queue inside your application with no external dependencies:
+
+```rust
+use broccoli_queue::BroccoliQueue;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // All messages stay in memory within this process
+    let queue = BroccoliQueue::builder("mem://")
+        .build()
+        .await?;
+
+    // Use for inter-component messaging
+    queue
+        .publish(
+            "component_events",
+            serde_json::json!({"component": "auth", "event": "user_login"}),
+            None,
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+## Known Limitations
+
+### Concurrent Consumer Race Condition
+
+<Warning>
+When multiple consumers attempt to read from the same topic concurrently, you may encounter `BroccoliError::BrokerNonIdempotentOp`. This occurs due to SurrealDB's transaction semantics.
+
+**Workaround**: Either:
+1. Use a single consumer per topic
+2. Implement retry logic to handle this error
+3. Coordinate consumer access using application-level locks
+</Warning>
+
+### TTL Not Supported
+
+Message TTL (time-to-live) is not implemented for the SurrealDB broker. Messages will persist indefinitely unless explicitly removed or moved to the failed queue after exhausting retries.
+
+## Performance Characteristics
+
+- **In-memory mode** (`mem://`): Very fast, O(log N) for message operations, all data in RAM
+- **WebSocket mode** (`ws://`): Network latency applies; suitable for development but not high-throughput production
+- **Message lookup**: O(N) for certain operations due to SurrealDB query semantics
+
+For production use with high throughput, Redis or RabbitMQ are recommended.
+
+## Scheduling Support
+
+SurrealDB supports scheduled and delayed messages via Broccoli's scheduling features:
+
+```rust
+use broccoli_queue::{BroccoliQueue, PublishOptions};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("mem://")
+        .enable_scheduling(true)
+        .build()
+        .await?;
+
+    // Schedule a message for 30 seconds from now
+    queue
+        .publish(
+            "scheduled_tasks",
+            serde_json::json!({"task": "daily_report"}),
+            Some(PublishOptions {
+                delay: Some(Duration::from_secs(30)),
+                ..Default::default()
+            }),
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+<Tip>
+Use `mem://` for unit tests and integration tests to avoid needing an external broker. This makes your test suite faster and more portable.
+</Tip>
+
+## Complete Example
+
+```rust
+use broccoli_queue::BroccoliQueue;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create an in-memory queue for this example
+    let queue = BroccoliQueue::builder("mem://")
+        .build()
+        .await?;
+
+    // Publish some messages
+    for i in 1..=5 {
+        queue
+            .publish(
+                "my_queue",
+                json!({"message_id": i, "content": format!("Message {}", i)}),
+                None,
+            )
+            .await?;
+    }
+
+    println!("Published 5 messages");
+
+    Ok(())
+}
+```
+
+## Migration to Production
+
+When moving from SurrealDB to a production broker:
+
+1. **For Redis**: Change `"mem://"` to `"redis://localhost:6379"`
+2. **For RabbitMQ**: Change `"mem://"` to `"amqp://guest:guest@localhost:5672/%2f"`
+3. Ensure retry logic and error handling are robust
+4. Monitor broker health and performance
+
+The Broccoli API remains the same across brokers, making migration straightforward.

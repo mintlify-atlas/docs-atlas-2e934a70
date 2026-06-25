@@ -1,0 +1,202 @@
+---
+title: "BroccoliError — Error Types Reference"
+sidebarTitle: "Errors"
+description: "Reference for all BroccoliError variants returned by Broccoli queue operations, including broker errors, publish/consume failures, and serialization errors."
+---
+
+`BroccoliError` is the unified error type returned by all Broccoli operations. It implements `std::error::Error` and is built using the `thiserror` crate, providing ergonomic error handling with automatic `Display` and `Error` trait implementations.
+
+## All Error Variants
+
+| Variant | Message Pattern | When It Occurs |
+|---------|-----------------|----------------|
+| `Broker(String)` | "Broker error: {0}" | Connection failures, pool initialization errors, generic broker operation failures. |
+| `BrokerNonIdempotentOp(String)` | "Broker error: non-idempotent operation {0}" | Concurrent reads on the same SurrealDB topic (race condition in SurrealDB). |
+| `BrokerNonIdempotentRetriableOp(String)` | "Broker error: non-idempotent retriable operation {0}" | Concurrent SurrealDB table operations that can be safely retried (e.g., concurrent writes). |
+| `Publish(String)` | "Failed to publish message: {0}" | Message publication failed; serialization errors, broker queue full, or connection issues. |
+| `Consume(String)` | "Failed to consume message: {0}" | Message consumption failed; deserialization errors, broker connection lost, or queue errors. |
+| `Acknowledge(String)` | "Failed to acknowledge message: {0}" | Failed to acknowledge a message; message may still be in processing queue. |
+| `Reject(String)` | "Failed to reject message: {0}" | Failed to reject a message; message may not move to failed queue correctly. |
+| `Cancel(String)` | "Failed to cancel message: {0}" | Failed to cancel a message; message ID may not exist or broker connection issue. |
+| `GetMessagePosition(String)` | "Failed to get message position: {0}" | Failed to retrieve message position in queue; unsupported on some brokers (e.g., RabbitMQ). |
+| `Serialization(serde_json::Error)` | "Serialization error: {0}" | JSON serialization or deserialization of message payload failed; payload type mismatch or invalid JSON. |
+| `Redis(redis::RedisError)` | "Redis error: {0}" | Redis-specific error; only available with `redis` feature. Wraps underlying Redis client errors. |
+| `SurrealDB(surrealdb::Error)` | "SurrealDB error: {0}" | SurrealDB-specific error; only available with `surrealdb` feature. Wraps underlying SurrealDB errors. |
+| `Job(String)` | "Job error: {0}" | Job processing error; handler returned an error or job execution failed. |
+| `QueueStatus(String)` | "Queue status error: {0}" | Queue status query failed; only with `management` feature. May indicate broker or metadata store issues. |
+| `ConnectionTimeout(u32)` | "Connection timeout after {0} retries" | Connection retry limit exhausted; broker is unreachable after N retry attempts. |
+| `NotImplemented` | "Feature not implemented" | Operation not supported for the current broker backend (e.g., `get_message_position` on RabbitMQ). |
+
+## Error Handling Patterns
+
+### Basic Pattern Matching
+
+```rust
+use broccoli_queue::error::BroccoliError;
+use broccoli_queue::brokers::broker::BrokerMessage;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct MyPayload {
+    id: String,
+}
+
+match queue.publish("jobs", None, &MyPayload { id: "1".to_string() }, None).await {
+    Ok(published) => println!("Published: {}", published.task_id),
+    Err(BroccoliError::Publish(e)) => eprintln!("Publish failed: {}", e),
+    Err(BroccoliError::ConnectionTimeout(retries)) => {
+        eprintln!("Timed out after {} retries", retries);
+    }
+    Err(BroccoliError::Serialization(e)) => {
+        eprintln!("Serialization failed: {}", e);
+    }
+    Err(e) => eprintln!("Unexpected error: {}", e),
+}
+```
+
+### Handling Broker Non-Idempotent Errors
+
+SurrealDB is vulnerable to race conditions under concurrent access. Use `BrokerNonIdempotentRetriableOp` as a signal to retry:
+
+```rust
+use broccoli_queue::error::BroccoliError;
+use broccoli_queue::queue::BroccoliQueue;
+
+async fn publish_with_retry(
+    queue: &BroccoliQueue,
+    topic: &str,
+    payload: &impl serde::Serialize,
+    max_retries: u32,
+) -> Result<(), BroccoliError> {
+    for attempt in 0..max_retries {
+        match queue.publish(topic, None, payload, None).await {
+            Ok(_) => return Ok(()),
+            Err(BroccoliError::BrokerNonIdempotentRetriableOp(e)) => {
+                if attempt < max_retries - 1 {
+                    println!("Retrying after non-idempotent op error: {}", e);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                } else {
+                    return Err(BroccoliError::BrokerNonIdempotentRetriableOp(e));
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(BroccoliError::Broker("All retries exhausted".to_string()))
+}
+```
+
+### Consumer Error Handling
+
+When processing messages, distinguish between message deserialization and handler errors:
+
+```rust
+use broccoli_queue::error::BroccoliError;
+use broccoli_queue::brokers::broker::BrokerMessage;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct JobPayload {
+    task_id: String,
+    data: String,
+}
+
+queue.process_messages("jobs", Some(5), None,
+    |msg: BrokerMessage<JobPayload>| async move {
+        // Handler code here
+        if msg.payload.data.is_empty() {
+            return Err(BroccoliError::Job(
+                format!("Empty payload in task {}", msg.task_id)
+            ));
+        }
+        println!("Processing: {:?}", msg.payload);
+        Ok(())
+    }
+).await?;
+```
+
+### Feature-Specific Errors
+
+<Warning>
+Catching `BroccoliError::Redis` or `BroccoliError::SurrealDB` requires the respective feature to be enabled. If the feature is not enabled, these variants will not exist and code referencing them will not compile.
+</Warning>
+
+```rust
+#[cfg(feature = "redis")]
+match queue.publish("jobs", None, &payload, None).await {
+    Err(BroccoliError::Redis(e)) => {
+        eprintln!("Redis-specific error: {}", e);
+    }
+    Err(e) => eprintln!("Other error: {}", e),
+    Ok(_) => {}
+}
+
+#[cfg(feature = "surrealdb")]
+match queue.publish("jobs", None, &payload, None).await {
+    Err(BroccoliError::SurrealDB(e)) => {
+        eprintln!("SurrealDB-specific error: {}", e);
+    }
+    Err(e) => eprintln!("Other error: {}", e),
+    Ok(_) => {}
+}
+```
+
+### Management Feature Errors
+
+Queue status operations are only available with the `management` feature:
+
+```rust
+#[cfg(feature = "management")]
+{
+    match queue.queue_status("orders".to_string(), None).await {
+        Ok(status) => println!("Queue size: {}", status.size),
+        Err(BroccoliError::QueueStatus(e)) => {
+            eprintln!("Failed to get queue status: {}", e);
+        }
+        Err(e) => eprintln!("Unexpected error: {}", e),
+    }
+}
+```
+
+## NotImplemented Error
+
+The `NotImplemented` error is returned when attempting an unsupported operation for a specific broker backend:
+
+```rust
+use broccoli_queue::error::BroccoliError;
+
+match queue.publish("jobs", None, &payload, None).await {
+    Err(BroccoliError::NotImplemented) => {
+        eprintln!("Message position tracking not supported on this broker");
+    }
+    Err(e) => eprintln!("Error: {}", e),
+    Ok(_) => {}
+}
+```
+
+<Tip>
+For RabbitMQ, message position queries are not supported. Use Redis or SurrealDB if you need position tracking.
+</Tip>
+
+## Serialization Errors
+
+Serialization errors indicate a mismatch between the message payload type and the stored JSON:
+
+```rust
+use broccoli_queue::error::BroccoliError;
+use broccoli_queue::brokers::broker::BrokerMessage;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ExpectedPayload {
+    id: String,
+}
+
+match queue.consume::<ExpectedPayload>("jobs", None).await {
+    Ok(msg) => println!("Consumed: {:?}", msg.payload),
+    Err(BroccoliError::Serialization(e)) => {
+        eprintln!("Message payload doesn't match expected type: {}", e);
+        // This may indicate a version mismatch or corrupted message
+    }
+    Err(e) => eprintln!("Error: {}", e),
+}
+```
+
+Ensure your Rust struct fields match the JSON keys in published messages, and use `#[serde(default)]` or `#[serde(skip)]` for optional fields.

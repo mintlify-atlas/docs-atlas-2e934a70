@@ -1,0 +1,305 @@
+---
+title: "Publishing Messages to a Broccoli Queue"
+sidebarTitle: "Publishing"
+description: "Publish single messages, batches, delayed messages, and priority messages using BroccoliQueue::publish and publish_batch with PublishOptions."
+---
+
+Publishing messages to a Broccoli queue is the foundation of any message-driven system. Whether you're sending a single notification or batching thousands of jobs, Broccoli provides flexible APIs to publish messages with optional scheduling, priorities, and time-to-live settings. The queue automatically assigns a unique `task_id` to each published message, which you can use to track its processing.
+
+## Single Message Publishing
+
+The `publish` method sends a single message to a topic with full control over delivery options.
+
+```rust
+pub async fn publish<T: Clone + serde::Serialize + serde::de::DeserializeOwned>(
+    &self,
+    topic: &str,
+    disambiguator: Option<String>,
+    message: &T,
+    options: Option<PublishOptions>,
+) -> Result<BrokerMessage<T>, BroccoliError>
+```
+
+**Parameters:**
+- `topic` — The topic name where the message will be published (string)
+- `disambiguator` — Optional string to route messages to fairness sub-queues. Pass `None` for standard queues, or `Some(key)` to enable fair distribution across consumers
+- `message` — Your serializable message payload (`&T`)
+- `options` — Optional `PublishOptions` to control scheduling, delay, TTL, and priority
+
+**Returns:**
+- `Result<BrokerMessage<T>, BroccoliError>` — On success, returns the published message with an assigned `task_id` (a UUID); on failure, returns a `BroccoliError`
+
+<CodeGroup>
+```rust Basic Single Publish
+use broccoli_queue::{
+    queue::{BroccoliQueue, PublishOptions},
+    error::BroccoliError,
+};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Serialize, Deserialize)]
+struct EmailJob {
+    to: String,
+    subject: String,
+    body: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), BroccoliError> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .build()
+        .await?;
+
+    let email = EmailJob {
+        to: "user@example.com".to_string(),
+        subject: "Welcome!".to_string(),
+        body: "Thanks for signing up.".to_string(),
+    };
+
+    // Publish immediately
+    let published = queue.publish("emails", None, &email, None).await?;
+    println!("Published email with task_id: {}", published.task_id);
+
+    Ok(())
+}
+```
+
+```rust With Fairness (Disambiguator)
+// Route to a specific consumer using disambiguator
+let published = queue
+    .publish(
+        "emails",
+        Some("user-123".to_string()),  // Routes to fairness sub-queue
+        &email,
+        None,
+    )
+    .await?;
+```
+</CodeGroup>
+
+## Batch Publishing
+
+For better efficiency when publishing multiple messages at once, use `publish_batch`. This method sends many messages in a single operation, returning a vector of published messages.
+
+```rust
+pub async fn publish_batch<T: Clone + serde::Serialize + serde::de::DeserializeOwned>(
+    &self,
+    topic: &str,
+    disambiguator: Option<String>,
+    messages: impl IntoIterator<Item = T>,
+    options: Option<PublishOptions>,
+) -> Result<Vec<BrokerMessage<T>>, BroccoliError>
+```
+
+**Returns:** `Result<Vec<BrokerMessage<T>>, BroccoliError>` — All published messages with assigned IDs
+
+<CodeGroup>
+```rust Basic Batch Publish
+let jobs = vec![
+    JobPayload {
+        id: "job-1".to_string(),
+        task_name: "process_data".to_string(),
+    },
+    JobPayload {
+        id: "job-2".to_string(),
+        task_name: "generate_report".to_string(),
+    },
+];
+
+let published = queue
+    .publish_batch("jobs", None, jobs, None)
+    .await?;
+
+println!("Published {} jobs", published.len());
+```
+
+```rust Batch with Delay
+use time::Duration;
+
+let published = queue
+    .publish_batch(
+        "jobs",
+        None,
+        jobs,
+        Some(PublishOptions {
+            delay: Some(Duration::seconds(10)),
+            scheduled_at: None,
+            ttl: None,
+            priority: None,
+        }),
+    )
+    .await?;
+```
+</CodeGroup>
+
+## PublishOptions
+
+Control message delivery behavior with `PublishOptions`:
+
+### delay
+**Type:** `Option<Duration>`
+
+Delays message availability by the specified duration from the time of publishing. The message is stored but remains unavailable for consumption until the delay expires.
+
+### scheduled_at
+**Type:** `Option<OffsetDateTime>`
+
+Publishes the message to become available at a specific future time (absolute scheduling). Useful for scheduling jobs at exact times.
+
+### ttl (Time-To-Live)
+**Type:** `Option<Duration>`
+
+Sets how long a message remains in the queue before expiring. Once expired, the message is automatically discarded without being consumed.
+
+### priority
+**Type:** `Option<u8>`
+
+Message priority level from 1 (highest) to 5 (lowest). Defaults to 5 if not specified. Higher-priority messages are consumed before lower-priority ones.
+
+<Note>
+**Scheduling Requirements:**
+- To use `delay` or `scheduled_at` options, you must enable scheduling on the queue builder: `.enable_scheduling(true)`
+- For RabbitMQ, the delayed-exchange plugin must be installed: https://www.rabbitmq.com/blog/2015/04/16/scheduling-messages-with-rabbitmq
+- Redis brokers support scheduling natively
+</Note>
+
+## Complete Publisher Example
+
+Here's a real-world example combining delayed and immediate batch publishing:
+
+```rust
+use broccoli_queue::{
+    queue::{BroccoliQueue, PublishOptions},
+    error::BroccoliError,
+};
+use serde::{Deserialize, Serialize};
+use time::Duration;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JobPayload {
+    id: String,
+    task_name: String,
+    parameters: Parameters,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Parameters {
+    input_data: String,
+    priority: u8,
+    timeout_seconds: u32,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), BroccoliError> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .failed_message_retry_strategy(Default::default())
+        .pool_connections(5)
+        .build()
+        .await?;
+
+    // Prepare delayed jobs (scheduled for 10 seconds from now)
+    let scheduled_jobs = vec![
+        JobPayload {
+            id: "job-1".to_string(),
+            task_name: "process_data".to_string(),
+            parameters: Parameters {
+                input_data: "data-1".to_string(),
+                priority: 1,
+                timeout_seconds: 300,
+            },
+            created_at: chrono::Utc::now(),
+        },
+        JobPayload {
+            id: "job-2".to_string(),
+            task_name: "generate_report".to_string(),
+            parameters: Parameters {
+                input_data: "data-2".to_string(),
+                priority: 2,
+                timeout_seconds: 600,
+            },
+            created_at: chrono::Utc::now(),
+        },
+    ];
+
+    // Publish with 10-second delay
+    println!("Publishing delayed jobs...");
+    let scheduled_jobs = queue
+        .publish_batch(
+            "jobs",
+            None,
+            scheduled_jobs,
+            Some(PublishOptions {
+                delay: Some(Duration::seconds(10)),
+                scheduled_at: None,
+                ttl: None,
+                priority: None,
+            }),
+        )
+        .await?;
+
+    println!(
+        "Published scheduled jobs: {:?}",
+        scheduled_jobs.iter().map(|j| j.task_id).collect::<Vec<_>>()
+    );
+
+    // Prepare immediate jobs
+    let immediate_jobs = vec![
+        JobPayload {
+            id: "job-3".to_string(),
+            task_name: "process_data".to_string(),
+            parameters: Parameters {
+                input_data: "data-3".to_string(),
+                priority: 1,
+                timeout_seconds: 300,
+            },
+            created_at: chrono::Utc::now(),
+        },
+        JobPayload {
+            id: "job-4".to_string(),
+            task_name: "generate_report".to_string(),
+            parameters: Parameters {
+                input_data: "data-4".to_string(),
+                priority: 2,
+                timeout_seconds: 600,
+            },
+            created_at: chrono::Utc::now(),
+        },
+    ];
+
+    // Publish immediately (no delay)
+    println!("Publishing immediate jobs...");
+    let immediate_jobs = queue
+        .publish_batch("jobs", None, immediate_jobs, None)
+        .await?;
+
+    println!(
+        "Published immediate jobs: {:?}",
+        immediate_jobs.iter().map(|j| j.task_id).collect::<Vec<_>>()
+    );
+
+    Ok(())
+}
+```
+
+## Message Fairness with Disambiguator
+
+The `disambiguator` parameter enables fair distribution of messages across multiple consumers:
+
+```rust
+// Publish to a fairness queue associated with "customer-123"
+let msg = queue
+    .publish(
+        "notifications",
+        Some("customer-123".to_string()),
+        &notification,
+        None,
+    )
+    .await?;
+```
+
+When consuming with fairness enabled, messages are balanced across disambiguator values, ensuring no single customer's messages block other customers' work. This is particularly useful in Redis brokers for fair resource allocation.
+
+<Tip>
+Use batch publishing when you have multiple messages to send. It's more efficient than multiple individual `publish` calls and reduces broker overhead.
+</Tip>

@@ -1,0 +1,255 @@
+---
+title: "Message Structure and Lifecycle in Broccoli"
+sidebarTitle: "Messages"
+description: "Learn how BrokerMessage wraps your payload with metadata like task_id, attempts, and disambiguator, and how messages flow through the queue lifecycle."
+---
+
+In Broccoli, every message you publish or consume is wrapped in a `BrokerMessage<T>` struct that adds important metadata for processing, tracking, and retry management. Understanding the message structure is key to building reliable message-driven systems.
+
+## BrokerMessage Structure
+
+The `BrokerMessage<T>` struct encapsulates your payload along with metadata:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `uuid::Uuid` | Unique identifier auto-generated for each message |
+| `payload` | `T` | Your message content (must be JSON-serializable) |
+| `attempts` | `u8` | Number of processing attempts made so far |
+| `disambiguator` | `Option<String>` | Optional fairness queue key for message ordering |
+
+### Example Message Structure
+
+```rust
+use broccoli_queue::brokers::broker::BrokerMessage;
+use uuid::Uuid;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EmailPayload {
+    to: String,
+    subject: String,
+    body: String,
+}
+
+// When you consume a message:
+let message: BrokerMessage<EmailPayload> = queue.consume("email_queue", None).await?;
+
+println!("Task ID: {}", message.task_id);        // e.g., "550e8400-e29b-41d4-a716-446655440000"
+println!("Attempts: {}", message.attempts);      // e.g., 0 on first consume
+println!("Payload: {:?}", message.payload);      // The EmailPayload
+```
+
+## Payload Requirements
+
+Your payload type `T` must implement the following traits:
+
+- `Clone`: Messages are cloned during processing
+- `Serialize`: For JSON serialization to the broker
+- `serde::de::DeserializeOwned`: For deserialization from the broker
+
+The standard way to derive these traits:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JobPayload {
+    id: String,
+    task_name: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UserData {
+    user_id: u64,
+    email: String,
+    metadata: Option<serde_json::Value>,
+}
+```
+
+## Message Lifecycle States
+
+Messages transition through distinct states during their lifetime:
+
+```
+┌─────────────────────┐
+│   Main Queue        │  Message is published and waiting
+│  (unprocessed)      │
+└──────────┬──────────┘
+           │ consume()
+           ↓
+┌─────────────────────┐
+│ Processing Queue    │  Message is being processed
+│  (in-flight)        │  Removed from main queue
+└──────────┬──────────┘
+           │
+      ┌────┴────┐
+      │          │
+  acknowledge() reject()
+      │          │
+      ↓          ↓
+ ┌────────┐  ┌──────────┐
+ │ Done   │  │ Failed   │
+ │(removed)  │Queue or  │
+ │          │ Main Q   │
+ └────────┘  └──────────┘
+```
+
+### State Transitions
+
+- **Consume**: Message moves from Main Queue → Processing Queue
+- **Acknowledge**: Message moves from Processing Queue → Removed (successfully processed)
+- **Reject**: Message moves from Processing Queue → Failed Queue (if retry limit exceeded) or Main Queue (if retries remain)
+
+## Attempt Tracking
+
+The `attempts` field tracks how many times a message has been processed:
+
+```rust
+let message = queue.consume::<JobPayload>("jobs", None).await?;
+
+if message.attempts > 0 {
+    println!("This is a retry. Attempt #{}", message.attempts);
+}
+
+// On first consumption, attempts is 0
+// Each time the message is rejected, attempts increments by 1
+// When attempts reaches the retry limit, the message moves to dead-letter queue
+```
+
+### Retry Behavior
+
+You configure the maximum number of retry attempts when building the queue:
+
+```rust
+use broccoli_queue::queue::{BroccoliQueue, RetryStrategy};
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .failed_message_retry_strategy(
+        RetryStrategy::new().with_attempts(5)
+    )
+    .build()
+    .await?;
+
+// Now messages will be retried up to 5 times before moving to dead-letter queue
+```
+
+## Fairness with Disambiguator
+
+The `disambiguator` field enables fair message processing across different categories:
+
+```rust
+#[derive(Clone, Serialize, Deserialize)]
+struct OrderPayload {
+    order_id: String,
+    customer_id: String,
+}
+
+// Publish with a disambiguator to group messages by customer
+let payload = OrderPayload {
+    order_id: "order-123".to_string(),
+    customer_id: "cust-456".to_string(),
+};
+
+queue
+    .publish(
+        "orders",
+        Some("cust-456".to_string()), // disambiguator
+        &payload,
+        None,
+    )
+    .await?;
+```
+
+When consuming with fairness enabled, Broccoli ensures that messages from different disambiguators are processed in a balanced way, preventing one customer from monopolizing the queue.
+
+## Serialization
+
+Broccoli serializes message payloads to JSON internally. This means:
+
+- Your payload must be JSON-serializable
+- The `payload` field is stored as a JSON string in the broker
+- Deserialization happens automatically when consuming
+- Complex nested structures work fine as long as they're JSON-compatible
+
+```rust
+use serde_json::json;
+
+#[derive(Clone, Serialize, Deserialize)]
+struct NestedPayload {
+    id: String,
+    data: serde_json::Value,
+}
+
+let payload = NestedPayload {
+    id: "test".to_string(),
+    data: json!({
+        "nested": {
+            "field": "value"
+        }
+    }),
+};
+
+queue.publish("complex", None, &payload, None).await?;
+```
+
+## Internal Implementation Detail
+
+Internally, Broccoli uses `InternalBrokerMessage` for broker-level operations. This struct serializes the `task_id` as a string and the `payload` as a JSON string. When you publish or consume through the public API, these conversions happen automatically:
+
+- `BrokerMessage<T>` (your generic type) ↔ `InternalBrokerMessage` (broker representation)
+
+You work with `BrokerMessage<T>` and don't need to interact with `InternalBrokerMessage` directly—it's an implementation detail handled by the queue.
+
+## Example: Complete Message Flow
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EmailJob {
+    recipient: String,
+    subject: String,
+    body: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379").build().await?;
+
+    // Publish a message
+    let job = EmailJob {
+        recipient: "user@example.com".to_string(),
+        subject: "Hello".to_string(),
+        body: "This is a test".to_string(),
+    };
+
+    let message = queue.publish("email_jobs", None, &job, None).await?;
+    println!("Published message: {}", message.task_id);
+
+    // Consume and process
+    let consumed = queue.consume::<EmailJob>("email_jobs", None).await?;
+    println!("Consumed: {} (attempt #{})", consumed.task_id, consumed.attempts);
+
+    // Process the message
+    match send_email(&consumed.payload).await {
+        Ok(_) => {
+            queue.acknowledge("email_jobs", consumed).await?;
+            println!("Message acknowledged!");
+        }
+        Err(e) => {
+            println!("Failed to send email: {:?}", e);
+            queue.reject("email_jobs", consumed).await?;
+            println!("Message rejected and queued for retry");
+        }
+    }
+
+    Ok(())
+}
+
+async fn send_email(job: &EmailJob) -> Result<(), String> {
+    // Your email sending logic
+    Ok(())
+}
+```

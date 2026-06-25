@@ -1,0 +1,320 @@
+---
+title: "RetryStrategy — Failed Message Retry Configuration"
+sidebarTitle: "RetryStrategy"
+description: "Configure how Broccoli retries failed messages with RetryStrategy. Set the maximum attempt count and enable or disable retrying entirely."
+---
+
+`RetryStrategy` defines how the Broccoli queue handles messages that fail processing. It controls whether failed messages should be retried and how many retry attempts should be made before moving messages to the dead-letter queue.
+
+## Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `retry_failed` | `bool` | `true` | Whether to retry messages that fail processing |
+| `attempts` | `Option<u8>` | `Some(3)` | Maximum number of retry attempts before dead-letter; `None` defaults to 3 |
+
+## Default Implementation
+
+```rust
+impl Default for RetryStrategy {
+    fn default() -> Self {
+        Self {
+            retry_failed: true,
+            attempts: Some(3),
+        }
+    }
+}
+```
+
+The default strategy retries failed messages up to 3 times before moving them to the failed queue.
+
+## Constructors
+
+### `RetryStrategy::new() -> Self`
+
+Creates a new retry strategy with default settings: 3 attempts enabled and retries enabled.
+
+```rust
+pub const fn new() -> Self
+```
+
+**Returns:** A new `RetryStrategy` instance with default configuration (3 attempts, retry enabled).
+
+**Example:**
+
+```rust
+let strategy = RetryStrategy::new();
+// Equivalent to RetryStrategy::default()
+```
+
+### `RetryStrategy::default() -> Self`
+
+Creates a new retry strategy using the default implementation.
+
+```rust
+impl Default for RetryStrategy {
+    fn default() -> Self { ... }
+}
+```
+
+**Returns:** A new `RetryStrategy` with 3 attempts and retries enabled.
+
+**Example:**
+
+```rust
+let strategy = RetryStrategy::default();
+```
+
+## Builder Methods
+
+### `with_attempts(attempts: u8) -> Self`
+
+Sets the maximum number of retry attempts before moving to the failed queue.
+
+```rust
+pub const fn with_attempts(mut self, attempts: u8) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `attempts` | `u8` | The maximum number of retry attempts |
+
+**Returns:** The updated `RetryStrategy` instance for chaining.
+
+**Example:**
+
+```rust
+let strategy = RetryStrategy::new()
+    .with_attempts(5); // Retry up to 5 times
+```
+
+### `retry_failed(retry_failed: bool) -> Self`
+
+Enables or disables retrying for failed messages.
+
+```rust
+pub const fn retry_failed(mut self, retry_failed: bool) -> Self
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `retry_failed` | `bool` | If `true`, retry failed messages; if `false`, immediately move to failed queue |
+
+**Returns:** The updated `RetryStrategy` instance for chaining.
+
+**Example:**
+
+```rust
+// Disable retries entirely
+let strategy = RetryStrategy::new()
+    .retry_failed(false);
+```
+
+## Attaching to Queue Builder
+
+Use the `BroccoliQueueBuilder::failed_message_retry_strategy()` method to attach a retry strategy when building your queue:
+
+```rust
+pub const fn failed_message_retry_strategy(
+    mut self,
+    strategy: RetryStrategy
+) -> Self
+```
+
+**Example:**
+
+```rust
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .failed_message_retry_strategy(
+        RetryStrategy::new().with_attempts(5)
+    )
+    .pool_connections(10)
+    .build()
+    .await?;
+```
+
+## Usage Examples
+
+### Default Retry Strategy (3 Attempts)
+
+```rust
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .failed_message_retry_strategy(RetryStrategy::default())
+    .build()
+    .await?;
+
+// Messages that fail will be retried up to 3 times
+// After 3 failures, they move to the failed queue
+```
+
+### Custom Attempt Count
+
+```rust
+let strategy = RetryStrategy::new()
+    .with_attempts(5);
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .failed_message_retry_strategy(strategy)
+    .build()
+    .await?;
+
+// Messages will be retried up to 5 times
+```
+
+### No Retries
+
+```rust
+let strategy = RetryStrategy::new()
+    .retry_failed(false);
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .failed_message_retry_strategy(strategy)
+    .build()
+    .await?;
+
+// Messages that fail go immediately to the failed queue (no retries)
+```
+
+### Single Attempt (No Retries)
+
+```rust
+let strategy = RetryStrategy::new()
+    .with_attempts(1)
+    .retry_failed(true); // Will only try once
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .failed_message_retry_strategy(strategy)
+    .build()
+    .await?;
+```
+
+### Aggressive Retries
+
+```rust
+let strategy = RetryStrategy::new()
+    .with_attempts(10);
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .failed_message_retry_strategy(strategy)
+    .build()
+    .await?;
+
+// Retry up to 10 times before dead-letter
+```
+
+## Complete Example
+
+```rust
+use broccoli_queue::{queue::{BroccoliQueue, RetryStrategy}, brokers::broker::BrokerMessage};
+use std::time::Duration;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct EmailTask {
+    to: String,
+    subject: String,
+    body: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Build queue with custom retry strategy
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .failed_message_retry_strategy(
+            RetryStrategy::new().with_attempts(5)
+        )
+        .pool_connections(10)
+        .build()
+        .await?;
+
+    // Process emails with retry handling
+    queue
+        .process_messages(
+            "emails",
+            Some(3),
+            None,
+            |message: BrokerMessage<EmailTask>| async move {
+                println!(
+                    "Processing email (attempt {}): {}",
+                    message.attempts + 1,
+                    message.payload.to
+                );
+
+                match send_email(&message.payload).await {
+                    Ok(_) => {
+                        println!("Email sent successfully");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("Email failed: {}", e);
+                        Err(e.into())
+                    }
+                }
+            },
+        )
+        .await?;
+
+    Ok(())
+}
+
+async fn send_email(task: &EmailTask) -> Result<(), Box<dyn std::error::Error>> {
+    // Simulate email sending
+    Ok(())
+}
+```
+
+## Behavior Details
+
+### Retry Flow
+
+1. **First Attempt:** Message is consumed and processed by a handler
+2. **Handler Fails:** If the handler returns an error, the message is rejected
+3. **Retries:** If `retry_failed` is `true` and `attempts > 0`:
+   - Message is re-queued for retry
+   - `attempts` counter increments
+   - Message becomes available again after a delay
+4. **Max Attempts Reached:** When `attempts >= configured attempts`:
+   - Message moves to the failed queue (dead-letter)
+   - No further retries occur
+
+### Tracking Attempts
+
+You can inspect the current attempt number in your handler:
+
+```rust
+queue.process_messages(
+    "tasks",
+    None,
+    None,
+    |message: BrokerMessage<Task>| async move {
+        let current_attempt = message.attempts;
+        println!("Processing task, attempt {}", current_attempt);
+
+        if current_attempt > 2 {
+            // Log warnings on later attempts
+            eprintln!("This is attempt {} - retries exhausted soon", current_attempt);
+        }
+
+        process_task(&message.payload).await
+    },
+).await?;
+```
+
+### Failed Queue
+
+Messages that exceed the maximum retry attempts move to a failed queue for manual inspection:
+
+- **Queue naming:** `{topic}:failed`
+- **Example:** Messages from `emails` topic go to `emails:failed`
+- **Manual recovery:** You can inspect and reprocess failed messages independently
+
+### Important Notes
+
+- **Retry enabled:** `retry_failed: true` means failures trigger retries (default behavior)
+- **Retry disabled:** `retry_failed: false` means failures immediately dead-letter messages
+- **Attempt counter:** Tracks how many times a message has failed; starts at 0
+- **Builder order:** The retry strategy can be set at any point in the builder chain
+- **Broker-specific:** Actual retry delay and behavior may vary by broker implementation

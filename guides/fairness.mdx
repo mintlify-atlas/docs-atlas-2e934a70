@@ -1,0 +1,200 @@
+---
+title: "Fair Message Distribution with Disambiguator Queues"
+sidebarTitle: "Fairness"
+description: "Use Broccoli's fairness queues to prevent producer starvation. The disambiguator groups messages by producer so all get equal processing opportunity."
+---
+
+In shared queue systems, a prolific producer can starve slower producers by flooding the queue with messages. Broccoli's fairness feature ensures that all producers get equal processing opportunity regardless of message volume, using round-robin consumption across producer-specific sub-queues.
+
+## The Fairness Problem
+
+Without fairness controls, a single producer publishing rapidly can dominate queue processing:
+
+```
+Standard Queue:
+[Message-A-1, Message-A-2, ..., Message-A-1000, Message-B-1]
+                                                             ↑
+                                        Message-B gets processed last!
+```
+
+With fairness enabled, messages are segregated by producer and consumed fairly:
+
+```
+Fairness Queues:
+Producer-A queue: [Message-A-1, Message-A-2, ..., Message-A-1000]
+Producer-B queue: [Message-B-1]
+                  
+Consumer alternates: Message-A-1 → Message-B-1 → Message-A-2 → ...
+```
+
+## How Fairness Works
+
+When you provide a **disambiguator** during publish, Broccoli automatically creates sub-queues for each unique disambiguator value. The consumer then round-robins across these sub-queues, ensuring one message from each producer before processing the next batch.
+
+### Queue Naming Convention
+
+- **Main queue** (no disambiguator): `{topic}`
+- **Fairness queue** (with disambiguator): `{topic}_{disambiguator}_queue`
+- **Processing queue**: `{topic}_{disambiguator}_processing`
+- **Failed queue**: `{topic}_{disambiguator}_failed`
+
+## Publishing with a Disambiguator
+
+Provide a disambiguator (typically a tenant ID, producer ID, or account ID) when publishing:
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JobMessage {
+    task: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .build()
+        .await?;
+
+    let message = JobMessage {
+        task: "process-data".to_string(),
+    };
+
+    // Publish with tenant ID as disambiguator
+    queue.publish(
+        "jobs",
+        Some("tenant-abc".to_string()),
+        &message,
+        None,
+    ).await?;
+
+    Ok(())
+}
+```
+
+## Consuming with Fairness
+
+Enable fairness mode when consuming to activate round-robin behavior across producer sub-queues:
+
+```rust
+use broccoli_queue::queue::ConsumeOptionsBuilder;
+
+let opts = ConsumeOptionsBuilder::new()
+    .fairness(true)
+    .build();
+
+queue.process_messages("jobs", Some(4), Some(opts), |msg| async {
+    println!("Processing: {:?}", msg.payload);
+    Ok(())
+}).await?;
+```
+
+<Note>
+**Redis Requirement**: Fairness queues are currently only supported by the Redis broker backend. RabbitMQ and SurrealDB brokers do not support the fairness feature yet.
+</Note>
+
+## Multi-Tenant Example
+
+Here's a practical example with multiple tenants publishing to the same queue:
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TenantJob {
+    tenant_id: String,
+    work: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379").build().await?;
+
+    // Tenant A publishes many jobs
+    for i in 0..100 {
+        let msg = TenantJob {
+            tenant_id: "tenant-a".to_string(),
+            work: format!("task-{}", i),
+        };
+        queue.publish(
+            "tenant-work",
+            Some("tenant-a".to_string()),
+            &msg,
+            None,
+        ).await?;
+    }
+
+    // Tenant B publishes just a few jobs
+    for i in 0..3 {
+        let msg = TenantJob {
+            tenant_id: "tenant-b".to_string(),
+            work: format!("task-{}", i),
+        };
+        queue.publish(
+            "tenant-work",
+            Some("tenant-b".to_string()),
+            &msg,
+            None,
+        ).await?;
+    }
+
+    // Consume with fairness: alternates between tenants
+    let opts = broccoli_queue::queue::ConsumeOptionsBuilder::new()
+        .fairness(true)
+        .build();
+
+    queue.process_messages("tenant-work", Some(4), Some(opts), |msg| async {
+        println!("Processing for {}: {}", msg.payload.tenant_id, msg.payload.work);
+        Ok(())
+    }).await?;
+
+    Ok(())
+}
+```
+
+## Fairness with Priorities
+
+Fairness and message priority work together—within each producer's queue, messages are still processed by priority order, but consumption alternates fairly between producers:
+
+```rust
+use broccoli_queue::queue::PublishOptions;
+use time::Duration;
+
+// High-priority job from tenant-a
+let opts_high = PublishOptions::builder()
+    .priority(1)
+    .build();
+queue.publish("jobs", Some("tenant-a".to_string()), &msg, Some(opts_high)).await?;
+
+// Low-priority job from tenant-b
+let opts_low = PublishOptions::builder()
+    .priority(5)
+    .build();
+queue.publish("jobs", Some("tenant-b".to_string()), &msg, Some(opts_low)).await?;
+
+// Consumer gets: tenant-a (high) → tenant-b (low) → tenant-a (next) → ...
+```
+
+<Warning>
+**Queue Consistency**: Do not mix fairness and non-fairness publishes to the same topic. Choose one pattern per topic to avoid unpredictable behavior. Either all messages to a topic use a disambiguator, or none do.
+</Warning>
+
+## Common Disambiguator Patterns
+
+- **Multi-tenant SaaS**: Use tenant ID as disambiguator
+- **Multi-customer platform**: Use customer ID as disambiguator
+- **Federated system**: Use federation ID as disambiguator
+- **Vendor integration**: Use vendor ID as disambiguator
+- **Department workflows**: Use department ID as disambiguator
+
+## Use Cases
+
+Fairness queues are perfect for scenarios where:
+
+- Multiple producers of varying sizes compete for processing capacity
+- Fair resource allocation is a business requirement
+- You need to prevent one tenant from starving others
+- Different customers have different publishing patterns
+- You want guaranteed processing opportunity for all producers

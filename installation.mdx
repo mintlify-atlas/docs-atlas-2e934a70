@@ -1,0 +1,165 @@
+---
+title: "Installing Broccoli in Your Rust Project"
+sidebarTitle: "Installation"
+description: "Add broccoli_queue to Cargo.toml with the correct feature flags for Redis, RabbitMQ, or SurrealDB broker backends."
+---
+
+Add Broccoli to your Rust project by specifying the appropriate broker backend. Broccoli is flexible—you can choose one or multiple brokers based on your needs.
+
+## Quick Start
+
+Add the following to your `Cargo.toml`:
+
+```toml
+[dependencies]
+broccoli_queue = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+```
+
+## Broker Selection
+
+Choose your message broker by enabling the corresponding feature flag:
+
+<Tabs>
+  <Tab title="Redis (Recommended)">
+    **Default for simplicity and single-broker setups.**
+
+    ```toml
+    [dependencies]
+    broccoli_queue = { version = "0.4", features = ["redis"] }
+    ```
+
+    Redis is the default feature and is ideal if you're just getting started. It provides connection pooling via `bb8-redis` and full support for all Broccoli features including fairness queues and message scheduling.
+
+    **Requirements**: Redis 6.0 or later
+  </Tab>
+
+  <Tab title="RabbitMQ">
+    **For advanced AMQP features and complex routing.**
+
+    ```toml
+    [dependencies]
+    broccoli_queue = { version = "0.4", features = ["rabbitmq"] }
+    ```
+
+    RabbitMQ support uses the `lapin` AMQP library. For message scheduling support, install the [RabbitMQ Delayed Message Exchange plugin](https://www.rabbitmq.com/blog/2015/04/16/scheduling-messages-with-rabbitmq).
+
+    **Requirements**: RabbitMQ 3.8 or later (3.12+ recommended)
+  </Tab>
+
+  <Tab title="SurrealDB">
+    **For embedded or single-file database scenarios.**
+
+    ```toml
+    [dependencies]
+    broccoli_queue = { version = "0.4", features = ["surrealdb"] }
+    ```
+
+    SurrealDB support provides in-memory or persistent backends. Use this for development, testing, or lightweight deployments where a separate message broker isn't available.
+
+    **Requirements**: SurrealDB 2.3 or later
+  </Tab>
+
+  <Tab title="All Backends">
+    **For applications that need to support multiple brokers.**
+
+    ```toml
+    [dependencies]
+    broccoli_queue = { version = "0.4", features = ["redis", "rabbitmq", "surrealdb"] }
+    ```
+
+    This is useful if you want to support multiple brokers in the same application or need to switch brokers at runtime.
+  </Tab>
+</Tabs>
+
+## Additional Features
+
+Enable optional features for extended functionality:
+
+| Feature | Description | Default | Enabled |
+|---------|-------------|---------|---------|
+| `redis` | Redis broker via bb8-redis | ✅ Yes | — |
+| `rabbitmq` | RabbitMQ broker via lapin | — | No |
+| `surrealdb` | SurrealDB broker | — | No |
+| `management` | Queue management and status API | — | No |
+
+## Feature Requirements
+
+<Warning>
+  **At least one broker feature must be enabled** (redis, rabbitmq, or surrealdb), or compilation will fail with:
+  ```
+  You must enable at least one of the following features: redis, rabbitmq, surrealdb
+  ```
+</Warning>
+
+## Management Feature
+
+Enable the `management` feature to access queue monitoring APIs:
+
+```toml
+[dependencies]
+broccoli_queue = { version = "0.4", features = ["redis", "management"] }
+```
+
+With `management` enabled, you can call `queue.queue_status()` to retrieve detailed queue statistics:
+
+```rust
+let status = queue.queue_status("jobs".to_string(), None).await?;
+println!("Queue size: {}", status.queue_size);
+```
+
+## Minimum Rust Version
+
+Broccoli requires **Rust 2021 edition or later**. Specify your `Cargo.toml`:
+
+```toml
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+```
+
+## Complete Example
+
+Here's a minimal `Cargo.toml` with Redis and management features:
+
+```toml
+[package]
+name = "my_broccoli_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+broccoli_queue = { version = "0.4", features = ["redis", "management"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+```
+
+Then in your `src/main.rs`:
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .pool_connections(10)
+        .build()
+        .await?;
+
+    // Check queue status with management feature
+    let status = queue.queue_status("my_queue".to_string(), None).await?;
+    println!("Queue size: {}", status.queue_size);
+
+    Ok(())
+}
+```
+
+## Next Steps
+
+- **Ready to code?** Head to the [Quickstart](/quickstart) guide
+- **Need help?** Check the [Introduction](/introduction) for an overview of Broccoli's features
+- **Questions?** Visit the [GitHub repository](https://github.com/densumesh/broccoli)

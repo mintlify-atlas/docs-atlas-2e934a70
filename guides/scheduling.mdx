@@ -1,0 +1,147 @@
+---
+title: "Scheduling and Delaying Messages in Broccoli"
+sidebarTitle: "Scheduling"
+description: "Schedule messages for future delivery using delay durations or absolute timestamps, and set TTL to automatically expire unprocessed messages."
+---
+
+Broccoli provides powerful message scheduling capabilities, allowing you to defer message processing to future points in time or automatically expire messages that haven't been consumed. This is essential for rate-limiting, email campaigns, deferred processing, and other time-sensitive workflows.
+
+## Enabling Scheduling
+
+To use message scheduling features, you must explicitly enable scheduling on the queue builder:
+
+```rust
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .enable_scheduling(true)
+    .build()
+    .await?;
+```
+
+<Warning>
+**RabbitMQ Users**: If using RabbitMQ as your broker, you must install the `rabbitmq-delayed-message-exchange` plugin before enabling scheduling. See the [RabbitMQ plugin documentation](https://www.rabbitmq.com/blog/2015/04/16/scheduling-messages-with-rabbitmq) for installation instructions.
+</Warning>
+
+## Three Scheduling Modes
+
+Broccoli supports three independent scheduling modes via `PublishOptions`:
+
+### 1. Delay (Offset from Now)
+
+Use the `delay` field to make a message available after a specified duration from now:
+
+```rust
+let opts = PublishOptions::builder()
+    .delay(Duration::seconds(30))
+    .build();
+
+queue.publish("jobs", None, &message, Some(opts)).await?;
+```
+
+The message will not be available for consumption until 30 seconds have passed.
+
+### 2. Scheduled At (Absolute Timestamp)
+
+Use the `schedule_at` field to publish a message for delivery at a specific `OffsetDateTime`:
+
+```rust
+let future_time = OffsetDateTime::now_utc() + Duration::hours(2);
+
+let opts = PublishOptions::builder()
+    .schedule_at(future_time)
+    .build();
+
+queue.publish("jobs", None, &message, Some(opts)).await?;
+```
+
+The message will become available exactly at the specified timestamp.
+
+### 3. TTL (Time-to-Live)
+
+Use the `ttl` field to automatically expire a message if it's not consumed within a specified duration:
+
+```rust
+let opts = PublishOptions::builder()
+    .ttl(Duration::minutes(5))
+    .build();
+
+queue.publish("jobs", None, &message, Some(opts)).await?;
+```
+
+If the message remains unconsumed after 5 minutes, it will be automatically deleted from the queue.
+
+## Complete Scheduling Example
+
+Here's a practical example showing delayed publish with multiple messages:
+
+```rust
+use broccoli_queue::queue::{BroccoliQueue, PublishOptions};
+use time::Duration;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JobPayload {
+    id: String,
+    task_name: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .enable_scheduling(true)
+        .build()
+        .await?;
+
+    let jobs = vec![
+        JobPayload {
+            id: "1".to_string(),
+            task_name: "task-1".to_string(),
+        },
+        JobPayload {
+            id: "2".to_string(),
+            task_name: "task-2".to_string(),
+        },
+    ];
+
+    let opts = PublishOptions {
+        delay: Some(Duration::seconds(10)),
+        scheduled_at: None,
+        ttl: None,
+        priority: None,
+    };
+
+    queue.publish_batch("jobs", None, jobs, Some(opts)).await?;
+    Ok(())
+}
+```
+
+<Note>
+**Mutual Exclusivity**: The `delay` and `scheduled_at` fields are mutually exclusive—use only one per publish operation. If both are specified, `scheduled_at` takes precedence.
+</Note>
+
+## Message Priority
+
+Combine scheduling with message priority to control the order of consumption when multiple messages are available:
+
+```rust
+let opts = PublishOptions::builder()
+    .delay(Duration::seconds(10))
+    .priority(1)  // 1 = highest, 5 = lowest
+    .build();
+
+queue.publish("jobs", None, &message, Some(opts)).await?;
+```
+
+Priority values range from **1 (highest)** to **5 (lowest)**. Messages with higher priority are consumed first, even if they were published later.
+
+## Use Cases
+
+<Tip>
+**Ideal Scenarios for Scheduled Messages**:
+
+- **Rate-limited tasks**: Delay email sends to respect provider limits
+- **Email campaigns**: Schedule bulk email delivery across time windows
+- **Deferred processing**: Delay computationally expensive work to off-peak hours
+- **Retry backoff**: Automatically reschedule failed jobs after exponential delays
+- **Time-window work**: Schedule tasks to run during specific business hours
+- **Message expiration**: Automatically remove stale messages that lose relevance
+</Tip>

@@ -1,0 +1,220 @@
+---
+title: "Monitoring Queues with the Management API"
+sidebarTitle: "Management"
+description: "Enable the management feature flag to inspect queue depth, processing counts, and failed message totals using BroccoliQueue::queue_status and size."
+---
+
+Broccoli provides a management API for monitoring queue health and status. Track pending messages, messages in processing, and failed messages to power health checks, monitoring dashboards, and alerting systems.
+
+## Enabling the Management Feature
+
+Add the `management` feature flag to your `Cargo.toml`:
+
+```toml
+[dependencies]
+broccoli_queue = { version = "0.4", features = ["redis", "management"] }
+```
+
+Once enabled, you gain access to the `queue_status()` method and enhanced queue introspection.
+
+## Getting Queue Status
+
+Use `queue_status()` to retrieve detailed status information about a queue:
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379").build().await?;
+
+    // Get status for a standard queue
+    let status = queue.queue_status("jobs".to_string(), None).await?;
+
+    println!("Queue: {}", status.name);
+    println!("Type: {:?}", status.queue_type);
+    println!("Pending: {}", status.size);
+    println!("Processing: {}", status.processing);
+    println!("Failed: {}", status.failed);
+
+    Ok(())
+}
+```
+
+## QueueStatus Structure
+
+The `QueueStatus` struct contains the following fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | The queue name or queue_disambiguator pair name |
+| `queue_type` | `QueueType` | Type of the queue: `Main`, `Processing`, `Failed`, or `Fairness` |
+| `size` | `usize` | Number of messages in the main queue awaiting processing |
+| `processing` | `usize` | Number of messages currently being processed |
+| `failed` | `usize` | Number of messages in the dead-letter/failed queue |
+| `disambiguator_count` | `Option<usize>` | For fairness queues, count of unique disambiguators (producers) |
+
+## QueueType Enum
+
+The `queue_type` field indicates the nature of the queue:
+
+```rust
+pub enum QueueType {
+    Main,       // Primary queue for pending messages
+    Processing, // Queue holding messages currently being processed
+    Failed,     // Dead-letter queue for failed messages
+    Fairness,   // Fairness-enabled queue
+}
+```
+
+## Getting Queue Size
+
+The `size()` method returns a map of queue names to message counts. This method is available **without** the management feature:
+
+```rust
+// Works without management feature
+let sizes = queue.size("jobs").await?;
+
+for (queue_name, count) in sizes {
+    println!("{}: {} messages", queue_name, count);
+}
+```
+
+For unfair queues, returns a single entry:
+
+```
+{
+  "jobs": 42
+}
+```
+
+For fairness queues, returns one entry per disambiguator:
+
+```
+{
+  "jobs_tenant-a_queue": 25,
+  "jobs_tenant-b_queue": 17,
+  "jobs_tenant-c_queue": 3
+}
+```
+
+## Complete Monitoring Example
+
+Here's a practical example combining status retrieval with logging:
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+
+async fn check_queue_health(queue: &BroccoliQueue, queue_name: &str) 
+    -> Result<(), Box<dyn std::error::Error>> 
+{
+    let status = queue.queue_status(queue_name.to_string(), None).await?;
+
+    println!("=== Queue Status Report ===");
+    println!("Queue: {}", status.name);
+    println!("Type: {}", status.queue_type);
+    println!("Pending messages: {}", status.size);
+    println!("Processing: {}", status.processing);
+    println!("Failed: {}", status.failed);
+
+    // Alert on high failure rate
+    if status.failed > 100 {
+        eprintln!("WARNING: {} failed messages in queue {}", status.failed, queue_name);
+    }
+
+    // Alert on backlog
+    if status.size > 1000 {
+        eprintln!("WARNING: Large backlog ({} messages) in {}", status.size, queue_name);
+    }
+
+    // Alert on stuck processing
+    if status.processing > 50 {
+        eprintln!("WARNING: Many messages stuck in processing ({})", status.processing);
+    }
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379").build().await?;
+
+    // Check all queues
+    for queue_name in &["jobs", "emails", "reports"] {
+        check_queue_health(&queue, queue_name).await?;
+    }
+
+    Ok(())
+}
+```
+
+## Fairness Queue Status
+
+For fairness-enabled queues, you can get status for all disambiguators or a specific one:
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379").build().await?;
+
+    // Get status for all producers/tenants
+    let all_status = queue.queue_status("tenant-jobs".to_string(), None).await?;
+    println!("Total producers: {:?}", all_status.disambiguator_count);
+    println!("Total pending: {}", all_status.size);
+
+    // Get status for specific producer/tenant
+    let tenant_a_status = queue
+        .queue_status("tenant-jobs".to_string(), Some("tenant-a".to_string()))
+        .await?;
+    println!("Tenant A pending: {}", tenant_a_status.size);
+    println!("Tenant A processing: {}", tenant_a_status.processing);
+    println!("Tenant A failed: {}", tenant_a_status.failed);
+
+    Ok(())
+}
+```
+
+<Note>
+**Broker Support**: The management feature currently supports **Redis** and **RabbitMQ** backends. SurrealDB support may be added in future releases.
+</Note>
+
+## Building Health Checks and Dashboards
+
+Combine queue status with monitoring tools to track queue metrics over time:
+
+```rust
+use std::time::Duration;
+
+async fn health_check_loop(queue: BroccoliQueue) {
+    loop {
+        match queue.queue_status("jobs".to_string(), None).await {
+            Ok(status) => {
+                // Send to monitoring system (Prometheus, DataDog, etc.)
+                metrics::gauge!("queue.pending", status.size as i64);
+                metrics::gauge!("queue.processing", status.processing as i64);
+                metrics::gauge!("queue.failed", status.failed as i64);
+            }
+            Err(e) => {
+                eprintln!("Failed to get queue status: {:?}", e);
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+```
+
+## Use Cases
+
+<Tip>
+**Common Monitoring Scenarios**:
+
+- **Health dashboards**: Display queue depth and processing metrics in real-time
+- **Alerting**: Trigger alerts when failed message count exceeds thresholds
+- **Backpressure detection**: Monitor pending message count to scale consumers
+- **SLA monitoring**: Track processing lag and failure rates
+- **Capacity planning**: Identify bottlenecks by monitoring queue growth
+- **Troubleshooting**: Investigate stuck processing by comparing pending vs. processing counts
+</Tip>

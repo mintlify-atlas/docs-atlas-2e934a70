@@ -1,0 +1,143 @@
+---
+title: "Redis Broker for Broccoli Queue"
+sidebarTitle: "Redis"
+description: "Configure Broccoli to use Redis as its message broker. Covers connection URL format, connection pooling, TLS, and Redis-specific features like fairness queues."
+---
+
+Redis is the default backend for Broccoli and is well-suited for production workloads. It provides high performance message queuing with support for advanced features like fairness queues, scheduled message delivery, and atomic processing queues.
+
+## Installation
+
+Add Broccoli with the Redis feature to your `Cargo.toml`:
+
+```toml
+broccoli_queue = { version = "0.4", features = ["redis"] }
+```
+
+Redis is included by default, but explicitly specifying the feature is recommended for clarity.
+
+## Connection URL Format
+
+Redis connection URLs follow the standard format:
+
+```
+redis://[username:password@]host[:port][/db]
+```
+
+For TLS connections, use the `rediss://` scheme:
+
+```
+rediss://[username:password@]host[:port][/db]
+```
+
+### Examples
+
+- Basic localhost connection:
+  ```
+  redis://localhost:6379
+  ```
+
+- With authentication:
+  ```
+  redis://:password@redis.example.com:6379/0
+  ```
+
+- TLS connection:
+  ```
+  rediss://redis.example.com:6380
+  ```
+
+## Connection Pooling
+
+Redis connections are pooled using the `bb8-redis` connection pool. The number of pooled connections is controlled via the `.pool_connections()` builder method. The default is 10 connections.
+
+```rust
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .pool_connections(10)
+    .build()
+    .await?;
+```
+
+## Redis-Specific Features
+
+### Fairness Queues
+
+Redis supports **fairness queues** through sub-queues per disambiguator. When publishing a message with a disambiguator, Broccoli creates a sub-queue for that disambiguator and maintains a round-robin consumption order. This ensures fair processing across different message sources.
+
+Sub-queues are named `{topic}_{disambiguator}_queue`, and a round-robin ordering is maintained in `{topic}_fairness_round_robin` to ensure even distribution.
+
+### Sorted Sets for Scheduling
+
+Broccoli uses Redis sorted sets to manage scheduled and delayed messages. Messages are stored with a score based on their delivery time. When enabled, delayed messages are scored using the current timestamp plus the delay, and messages scheduled for a specific time use that timestamp as the score.
+
+When a message is ready for consumption, it is moved from the sorted set to the main queue atomically.
+
+### Processing Queue
+
+The Redis broker implements atomic message movement using Lua scripts. When a message is consumed, it is moved from the main queue to a processing queue using `LPUSH` (or `LMOVE` in Redis 6.2+). This ensures that if a consumer crashes, the message can be requeued for retry.
+
+## Queue Naming Convention
+
+Broccoli follows a consistent naming convention for Redis keys:
+
+- **Main queue**: `{topic}` (sorted set)
+- **Processing queue**: `{topic}_processing` (for messages currently being processed)
+- **Failed queue**: `{topic}_failed` (for messages that exceeded retry attempts)
+- **Fairness tracking**: `{topic}_fairness_set` and `{topic}_fairness_round_robin` (when fairness is used)
+
+<Note>
+Redis 6.2+ is recommended for full support of atomic list operations. Earlier versions may exhibit race conditions during message consumption.
+</Note>
+
+## Complete Example
+
+Here's a complete example of configuring and using Broccoli with Redis:
+
+```rust
+use broccoli_queue::{BroccoliQueue, PublishOptions, RetryStrategy};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .pool_connections(10)
+        .failed_message_retry_strategy(
+            RetryStrategy::new().with_attempts(3)
+        )
+        .enable_scheduling(true)
+        .build()
+        .await?;
+
+    // Publish a message
+    queue
+        .publish(
+            "order_processing",
+            serde_json::json!({"order_id": 123, "amount": 99.99}),
+            None,
+        )
+        .await?;
+
+    // Publish a delayed message
+    queue
+        .publish(
+            "notifications",
+            serde_json::json!({"user_id": 456, "message": "Hello!"}),
+            Some(PublishOptions {
+                delay: Some(Duration::from_secs(60)),
+                ..Default::default()
+            }),
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+## Performance Considerations
+
+- **Connection pooling** reduces overhead for concurrent message producers
+- **Sorted sets** provide O(log N) insertion time
+- **Lua scripts** ensure atomic operations without race conditions
+- **Fairness queues** add overhead for disambiguator tracking but ensure fair processing
+
+For high-throughput scenarios, increase the `pool_connections` setting to match your concurrency level.

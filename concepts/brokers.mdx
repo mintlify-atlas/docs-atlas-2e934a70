@@ -1,0 +1,242 @@
+---
+title: "Broker Backends: Redis, RabbitMQ, and SurrealDB"
+sidebarTitle: "Brokers"
+description: "Broccoli supports pluggable broker backends. The broker is selected automatically from the connection URL. Learn how each backend differs and when to use each one."
+---
+
+Broccoli is designed with a pluggable broker architecture, allowing you to choose the message broker that best fits your deployment and operational needs. The broker is automatically selected based on the connection URL scheme, so you can switch backends by simply changing one configuration value.
+
+## Broker Selection by URL Scheme
+
+When you call `BroccoliQueue::builder(url)`, Broccoli parses the URL scheme to determine which broker backend to use:
+
+- **`redis://`** → Redis broker (high performance, in-memory)
+- **`amqp://`** → RabbitMQ broker (enterprise-grade, feature-rich)
+- **`ws://` or `mem://`** → SurrealDB broker (embedded/testing, in-memory option)
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+
+// Redis
+let queue = BroccoliQueue::builder("redis://localhost:6379").build().await?;
+
+// RabbitMQ
+let queue = BroccoliQueue::builder("amqp://guest:guest@localhost:5672/%2F").build().await?;
+
+// SurrealDB
+let queue = BroccoliQueue::builder("ws://localhost:8000").build().await?;
+```
+
+## Broker Comparison
+
+| Backend | URL Scheme | Feature Flag | Use Case |
+|---------|-----------|--------------|----------|
+| Redis | `redis://` | `redis` (default) | Production workloads, high throughput, low latency |
+| RabbitMQ | `amqp://` | `rabbitmq` | Enterprise messaging, advanced routing, durability |
+| SurrealDB | `ws://` or `mem://` | `surrealdb` | Embedded deployments, testing, in-memory queues |
+
+## Redis Broker
+
+**Best for:** Production systems requiring high throughput and low latency.
+
+### Characteristics
+
+- In-memory data store with optional persistence
+- Extremely fast message processing
+- Simple key-value semantics
+- Excellent for horizontal scaling with Redis Cluster
+- Perfect for microservices architectures
+
+### Connection URL
+
+```
+redis://[user:password@]localhost:6379[/db]
+
+// Examples:
+redis://localhost:6379
+redis://default:secretpassword@redis.example.com:6379/0
+```
+
+### When to Use
+
+- ✅ High-frequency message processing
+- ✅ Low-latency requirements
+- ✅ Cloud-native deployments
+- ✅ Stateless services with external persistence
+
+## RabbitMQ Broker
+
+**Best for:** Enterprise environments requiring advanced messaging features and guarantees.
+
+### Characteristics
+
+- Full-featured message broker with routing and exchanges
+- Message acknowledgment and durable queues
+- Dead-letter exchanges for failed messages
+- Priority queues and message TTL
+- Clustering and federation for high availability
+
+### Connection URL
+
+```
+amqp://[user:password@]host:port/[vhost]
+
+// Examples:
+amqp://guest:guest@localhost:5672/%2F
+amqp://admin:secretpass@rabbitmq.example.com:5672/prod
+```
+
+### When to Use
+
+- ✅ Complex routing requirements
+- ✅ Message priority levels
+- ✅ Guaranteed delivery semantics
+- ✅ Enterprise integrations
+
+### Note on Scheduling
+
+If you enable scheduling (`enable_scheduling(true)`) with RabbitMQ, you must install the [RabbitMQ Delayed Message Exchange plugin](https://www.rabbitmq.com/blog/2015/04/16/scheduling-messages-with-rabbitmq). Without it, scheduled/delayed messages won't work correctly.
+
+## SurrealDB Broker
+
+**Best for:** Embedded applications, testing, and development.
+
+### Characteristics
+
+- Full-featured embedded database
+- In-memory storage option
+- WebSocket connection support
+- Suitable for single-instance deployments
+- Great for rapid prototyping
+
+### Connection URLs
+
+```
+ws://[user:password@]host:port/[database]/[namespace]
+mem://[user:password@]host:port/[database]/[namespace]
+
+// Examples:
+ws://localhost:8000
+mem://localhost:8000
+ws://admin:password@surreal.example.com:8000/queue_db/default
+```
+
+### When to Use
+
+- ✅ Local development and testing
+- ✅ Embedded applications
+- ✅ Quick prototypes
+- ✅ In-memory queues with optional persistence
+
+## Broker Configuration
+
+All brokers support a common set of configuration options through `BrokerConfig`:
+
+```rust
+use broccoli_queue::queue::{BroccoliQueue, RetryStrategy};
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    // Retry configuration
+    .failed_message_retry_strategy(
+        RetryStrategy::new()
+            .with_attempts(5)
+            .retry_failed(true)
+    )
+    // Connection pool size
+    .pool_connections(10)
+    // Enable delayed/scheduled messages
+    .enable_scheduling(true)
+    .build()
+    .await?;
+```
+
+### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `failed_message_retry_strategy` | `RetryStrategy` | 3 attempts | Retry behavior for failed messages |
+| `pool_connections` | `u8` | 10 | Connection pool size |
+| `enable_scheduling` | `bool` | false | Enable delayed/scheduled message support |
+
+## Switching Brokers
+
+One of Broccoli's key strengths is switching between brokers without code changes:
+
+```rust
+// During development: use SurrealDB
+let queue = BroccoliQueue::builder(env::var("QUEUE_URL")?).build().await?;
+
+// Staging: switch to RabbitMQ
+// Set QUEUE_URL=amqp://...
+
+// Production: use Redis
+// Set QUEUE_URL=redis://...
+```
+
+All queue operations (`publish`, `consume`, `acknowledge`, `reject`) work identically across all brokers.
+
+<Note>
+Only one broker backend feature needs to be enabled in your `Cargo.toml`. The `redis` feature is enabled by default. You can enable multiple features, but the URL scheme determines which broker is used at runtime. For example, you could compile with both `redis` and `rabbitmq` enabled and choose which one to connect to via the URL.
+</Note>
+
+## Broker Trait Interface
+
+Under the hood, all brokers implement the `Broker` trait, which defines methods for:
+
+- **`connect(url)`** – Establish a connection to the broker
+- **`publish(queue, messages, options)`** – Send messages to a queue
+- **`consume(queue, options)`** – Retrieve a single message (blocking)
+- **`try_consume(queue, options)`** – Attempt to retrieve a message (non-blocking)
+- **`acknowledge(queue, message)`** – Mark a message as processed
+- **`reject(queue, message)`** – Mark a message as failed and retry/dead-letter
+- **`cancel(queue, message_id)`** – Delete a message from the queue
+- **`size(queue_name)`** – Get the number of messages in a queue
+
+This abstraction means you can easily test your code with one broker in development and deploy with another in production.
+
+## Example: Multi-Broker Setup
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+use std::env;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Read broker URL from environment
+    let broker_url = env::var("BROCCOLI_URL")
+        .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+
+    let queue = BroccoliQueue::builder(broker_url)
+        .pool_connections(10)
+        .build()
+        .await?;
+
+    // Your application code works identically regardless of broker
+    queue
+        .publish(
+            "my_queue",
+            None,
+            &MyMessage { id: "123".to_string() },
+            None,
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+Switch brokers by setting the environment variable:
+
+```bash
+# Development: SurrealDB
+export BROCCOLI_URL=ws://localhost:8000
+cargo run
+
+# Staging: RabbitMQ
+export BROCCOLI_URL=amqp://guest:guest@staging-rabbit:5672/%2F
+cargo run
+
+# Production: Redis
+export BROCCOLI_URL=redis://redis.prod.internal:6379/0
+cargo run
+```

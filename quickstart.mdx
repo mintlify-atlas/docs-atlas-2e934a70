@@ -1,47 +1,181 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Broccoli in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Learn how to install Broccoli, connect to Redis, publish your first message, and start a consumer worker in under 5 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+Get up and running with Broccoli in just a few minutes. This guide walks you through creating a simple producer-consumer system for handling background jobs.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+<Step title="Add Broccoli to your Cargo.toml">
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+Add the `broccoli_queue` crate with the Redis feature (enabled by default):
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
+```toml
+[dependencies]
+broccoli_queue = { version = "0.4", features = ["redis"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+```
+
+</Step>
+
+<Step title="Define a message type">
+
+Create a struct that represents your job. It must derive `Clone`, `Serialize`, and `Deserialize`:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MyJob {
+    id: String,
+    task_name: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
+</Step>
+
+<Step title="Build the queue">
+
+Initialize a `BroccoliQueue` connected to your message broker:
+
+```rust
+use broccoli_queue::queue::BroccoliQueue;
+
+let queue = BroccoliQueue::builder("redis://localhost:6379")
+    .pool_connections(5)
+    .failed_message_retry_strategy(Default::default())
+    .build()
+    .await?;
+```
+
+The builder is fluent and customizable:
+- `pool_connections(5)` — Number of concurrent broker connections
+- `failed_message_retry_strategy(Default::default())` — Retry up to 3 times on failure
+
+</Step>
+
+<Step title="Publish a message">
+
+Send a job to the queue:
+
+```rust
+let job = MyJob {
+    id: "job-123".to_string(),
+    task_name: "process_data".to_string(),
+    created_at: chrono::Utc::now(),
+};
+
+queue.publish("jobs", None, &job, None).await?;
+```
+
+For batch publishing, use `publish_batch()`:
+
+```rust
+let jobs = vec![job1, job2, job3];
+queue.publish_batch("jobs", None, jobs, None).await?;
+```
+
+</Step>
+
+<Step title="Consume and process messages">
+
+Start a worker to process messages:
+
+```rust
+use broccoli_queue::brokers::broker::BrokerMessage;
+
+queue.process_messages("jobs", Some(4), None, |msg: BrokerMessage<MyJob>| async move {
+    println!("Processing: {:?}", msg.payload);
+    
+    // Do your work here
+    
+    Ok(())
+}).await?;
+```
+
+This creates 4 concurrent workers that continuously process messages from the "jobs" queue. The handler runs in parallel and automatically acknowledges successful messages.
+
+</Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+<Note>
+  **Redis Required**: This quickstart assumes you have Redis running locally on port 6379. Start it with:
+  ```bash
+  docker run -d -p 6379:6379 redis:latest
+  ```
+  Broccoli also supports RabbitMQ and SurrealDB—see [Installation](/installation) for options.
+</Note>
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+## Complete Working Example
+
+Here's a full producer-consumer example you can run immediately:
+
+```rust
+use broccoli_queue::{
+    queue::BroccoliQueue,
+    brokers::broker::BrokerMessage,
+};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PrintJob {
+    id: String,
+    message: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize queue
+    let queue = BroccoliQueue::builder("redis://localhost:6379")
+        .pool_connections(5)
+        .build()
+        .await?;
+
+    // Spawn a producer task
+    let producer_queue = queue.clone();
+    tokio::spawn(async move {
+        for i in 0..10 {
+            let job = PrintJob {
+                id: format!("job-{}", i),
+                message: format!("Hello from job {}", i),
+            };
+            
+            match producer_queue.publish("print_jobs", None, &job, None).await {
+                Ok(_) => println!("Published: {}", job.id),
+                Err(e) => eprintln!("Publish error: {}", e),
+            }
+            
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+
+    // Consume messages
+    queue
+        .process_messages(
+            "print_jobs",
+            Some(2),
+            None,
+            |msg: BrokerMessage<PrintJob>| async move {
+                println!("🥦 {}: {}", msg.payload.id, msg.payload.message);
+                Ok(())
+            },
+        )
+        .await?;
+
+    Ok(())
+}
+```
+
+## Next Steps
+
+- **Multiple brokers?** Check out [Installation](/installation) to configure Redis, RabbitMQ, or SurrealDB
+- **Need message scheduling?** Use `PublishOptions` to set delays and scheduled delivery times
+- **Want advanced features?** Explore error handlers, fairness queues, and the management API in the full documentation

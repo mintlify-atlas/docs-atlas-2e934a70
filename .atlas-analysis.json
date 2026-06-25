@@ -1,0 +1,123 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Broccoli",
+  "projectDescription": "A robust, async-first message queue library for Rust applications, supporting Redis, RabbitMQ, and SurrealDB backends with configurable retry strategies, connection pooling, and fairness scheduling.",
+  "theme": "palm",
+  "primaryColor": "#4c4c54",
+  "lightColor": "#80a642",
+  "darkColor": "#33540d",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/queue",
+              "concepts/messages",
+              "concepts/brokers"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/publishing",
+              "guides/consuming",
+              "guides/retry-strategies",
+              "guides/scheduling",
+              "guides/fairness",
+              "guides/management"
+            ]
+          },
+          {
+            "group": "Broker Backends",
+            "pages": [
+              "brokers/redis",
+              "brokers/rabbitmq",
+              "brokers/surrealdb"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Queue",
+            "pages": [
+              "api/broccoli-queue",
+              "api/publish-options",
+              "api/consume-options",
+              "api/retry-strategy"
+            ]
+          },
+          {
+            "group": "Types",
+            "pages": [
+              "api/broker-message",
+              "api/broker-config",
+              "api/errors"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Asynchronous message processing with Tokio",
+    "Multiple backend support: Redis, RabbitMQ, and SurrealDB",
+    "Configurable retry strategies with customizable attempt counts",
+    "Connection pooling for efficient resource usage",
+    "Type-safe message serialization/deserialization via serde",
+    "Message fairness queues with disambiguator support",
+    "Message scheduling with delay and TTL options",
+    "Concurrent workers via process_messages with configurable concurrency",
+    "Management API for queue status introspection",
+    "Batch publish and consume operations"
+  ],
+  "publicApiSurface": [
+    "BroccoliQueue::builder(broker_url)",
+    "BroccoliQueue::builder_with(db) [surrealdb feature]",
+    "BroccoliQueueBuilder::pool_connections(connections)",
+    "BroccoliQueueBuilder::failed_message_retry_strategy(strategy)",
+    "BroccoliQueueBuilder::enable_scheduling(bool)",
+    "BroccoliQueueBuilder::build()",
+    "BroccoliQueue::publish(topic, disambiguator, message, options)",
+    "BroccoliQueue::publish_batch(topic, disambiguator, messages, options)",
+    "BroccoliQueue::consume(topic, options)",
+    "BroccoliQueue::consume_batch(topic, batch_size, timeout, options)",
+    "BroccoliQueue::try_consume(topic, options)",
+    "BroccoliQueue::try_consume_batch(topic, batch_size, options)",
+    "BroccoliQueue::acknowledge(topic, message)",
+    "BroccoliQueue::reject(topic, message)",
+    "BroccoliQueue::cancel(topic, message_id)",
+    "BroccoliQueue::process_messages(topic, concurrency, options, handler)",
+    "BroccoliQueue::process_messages_with_handlers(topic, concurrency, options, handler, on_success, on_error)",
+    "BroccoliQueue::size(queue_name)",
+    "BroccoliQueue::queue_status(queue_name, disambiguator) [management feature]",
+    "RetryStrategy::new()",
+    "RetryStrategy::with_attempts(attempts)",
+    "RetryStrategy::retry_failed(bool)",
+    "PublishOptions::builder()",
+    "PublishOptionsBuilder::ttl(duration)",
+    "PublishOptionsBuilder::delay(duration)",
+    "PublishOptionsBuilder::schedule_at(time)",
+    "PublishOptionsBuilder::priority(u8)",
+    "ConsumeOptions::builder()",
+    "ConsumeOptionsBuilder::auto_ack(bool)",
+    "ConsumeOptionsBuilder::fairness(bool)",
+    "ConsumeOptionsBuilder::consume_wait(duration)",
+    "ConsumeOptionsBuilder::handler_ack(bool)",
+    "BrokerMessage<T> { task_id, payload, attempts, disambiguator }",
+    "BroccoliError (enum with Broker, Publish, Consume, Acknowledge, Reject, Cancel, Serialization, Redis, SurrealDB variants)"
+  ]
+}
